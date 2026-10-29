@@ -333,16 +333,22 @@ function runSingleTest(inFile, outFile, testNum) {
   });
 }
 
-// 5. テスト実行ループ
+// 5. テスト並列（同時）実行
+// CPUのマルチコアを活用し、全ケースを同時に並列実行して完了時間を最短化
+// （TLE発生時も全ケースを同時並行で待つため、合計待ち時間は最長ケースの1回分で済む）
+const testPromises = testFiles.map((file, i) => {
+  const inFile = path.join(testDir, file);
+  const outFile = path.join(testDir, `out${i + 1}.txt`);
+  const caseNum = i + 1;
+  return runSingleTest(inFile, outFile, caseNum).then((res) => ({ caseNum, res }));
+});
+
+const results = await Promise.all(testPromises);
+
 let passedCount = 0;
 let maxTimeMs = 0;
 
-for (let i = 0; i < testFiles.length; i++) {
-  const inFile = path.join(testDir, testFiles[i]);
-  const outFile = path.join(testDir, `out${i + 1}.txt`);
-  const caseNum = i + 1;
-
-  const res = await runSingleTest(inFile, outFile, caseNum);
+for (const { caseNum, res } of results) {
   if (res.elapsedMs > maxTimeMs) maxTimeMs = res.elapsedMs;
 
   const timeStr = `${Math.round(res.elapsedMs)} ms`;
