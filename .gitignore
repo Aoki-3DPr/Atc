@@ -1,0 +1,40 @@
+# CMake build output
+cmake-build-*/
+[Bb]uild/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+
+# Node.js
+node_modules/
+
+# AtCoder Testcases & Session
+**/test/
+.atcoder_session
+
+# Bundled submission files
+*_bundled.cpp
+
+# Executables & object files
+*.exe
+*.out
+*.app
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+
+# JetBrains CLion
+.idea/
+*.iml
+
+# Visual Studio / VS Code
+.vscode/
+.vs/
+
+# OS generated
+.DS_Store
+Thumbs.db
+desktop.ini
