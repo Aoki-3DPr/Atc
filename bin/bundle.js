@@ -186,10 +186,11 @@ function bundle(sourceFilePath) {
 // 実行
 const bundledCode = bundle(targetFilePath);
 
-// クリップボードにコピー (Windows clip.exe)
+// クリップボードにコピー (Windows clip / WSL clip.exe)
 let copiedToClipboard = false;
 try {
-  execSync("clip", { input: bundledCode, stdio: ["pipe", "ignore", "ignore"] });
+  const clipCmd = process.platform === "win32" ? "clip" : "clip.exe";
+  execSync(clipCmd, { input: bundledCode, stdio: ["pipe", "ignore", "ignore"] });
   copiedToClipboard = true;
 } catch {
   // clip が使えない環境でもエラーにしない

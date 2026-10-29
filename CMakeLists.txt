@@ -6,6 +6,35 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# デバッグ情報 (-g) を有効化（CLion のブレークポイント停止・変数確認を完全サポート）
+set(CMAKE_CXX_FLAGS_DEBUG "-g" CACHE STRING "Flags used by the CXX compiler during Debug builds." FORCE)
+set(CMAKE_C_FLAGS_DEBUG "-g" CACHE STRING "Flags used by the C compiler during Debug builds." FORCE)
+
+# 競プロ用コンパイルオプション（例外やRTTIのコード生成をスキップして高速化、デバッグ情報-gは保持）
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fno-exceptions -fno-rtti)
+endif()
+
+# Linux / WSL2 環境用の高速化（mold / lld リンカおよび ccache を自動適用）
+if(UNIX AND NOT APPLE)
+    find_program(MOLD_LINKER mold)
+    if(MOLD_LINKER)
+        message(STATUS "Using fast linker: mold")
+        add_link_options("-fuse-ld=mold")
+    else()
+        find_program(LLD_LINKER ld.lld)
+        if(LLD_LINKER)
+            message(STATUS "Using fast linker: lld")
+            add_link_options("-fuse-ld=lld")
+        endif()
+    endif()
+
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+        message(STATUS "Using compiler cache: ccache")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    endif()
+endif()
 # ライブラリディレクトリをインクルードパスに追加
 # 各問題コードから `#include "SegmentTree.cpp"` やヘッダーファイルを直接 include 可能
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
@@ -72,4 +101,4 @@ foreach(SRC ${SRC_FILES})
     endif()
 endforeach()
 
-# Auto-reload trigger: abc480 (2026-10-29T03:48:06.025Z)
+# Auto-reload trigger: abc481 (2026-10-29T13:39:45.198Z)

@@ -87,59 +87,137 @@ if (fs.existsSync(infoPath)) {
 }
 
 // 3. CMake での自動コンパイル
-console.log(`${c.cyan}[Build]${c.reset} ${targetName} をコンパイル中...`);
-const buildDir = path.join(projectRoot, "cmake-build-debug-mingw");
-const exePath = path.join(buildDir, `${targetName}.exe`);
-
-const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-const clionCmake = path.join(
-  localAppData,
-  "Programs",
-  "CLion",
-  "bin",
-  "cmake",
-  "win",
-  "x64",
-  "bin",
-  "cmake.exe"
+const isLinux = process.platform === "linux";
+const buildDir = path.join(
+  projectRoot,
+  isLinux ? "cmake-build-debug-wsl" : "cmake-build-debug-mingw"
 );
-const cmakeCmd = fs.existsSync(clionCmake) ? clionCmake : "cmake";
+const exePath = path.join(
+  buildDir,
+  isLinux ? targetName : `${targetName}.exe`
+);
 
-try {
-  execFileSync(cmakeCmd, ["--build", buildDir, "--target", targetName], {
-    cwd: projectRoot,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  console.log(`${c.green}✓ ビルド成功${c.reset}\n`);
-} catch (err) {
-  console.error(`${c.red}✗ ビルドエラー:${c.reset}`);
-  if (err.stderr) console.error(err.stderr.toString());
-  else if (err.stdout) console.error(err.stdout.toString());
-  process.exit(1);
+let needsBuild = true;
+if (fs.existsSync(exePath) && fs.existsSync(srcFile)) {
+  const exeTime = fs.statSync(exePath).mtimeMs;
+  const srcTime = fs.statSync(srcFile).mtimeMs;
+  let libUpdated = false;
+  const libDir = path.join(projectRoot, "lib");
+  if (fs.existsSync(libDir)) {
+    for (const f of fs.readdirSync(libDir)) {
+      if (f.endsWith(".cpp") || f.endsWith(".h")) {
+        if (fs.statSync(path.join(libDir, f)).mtimeMs > exeTime) {
+          libUpdated = true;
+          break;
+        }
+      }
+    }
+  }
+  if (srcTime <= exeTime && !libUpdated) {
+    needsBuild = false;
+  }
 }
 
-// 初回実行時のWindows Defenderスキャン＆DLL読み込み遅延（ウォームアップ）を解消
-try {
-  const warmupProc = spawn(exePath, [], {
-    cwd: contestDir,
-    stdio: ["pipe", "ignore", "ignore"],
-  });
-  warmupProc.stdin.end();
-  await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      try { warmupProc.kill("SIGKILL"); } catch {}
-      resolve();
-    }, 500);
-    warmupProc.on("close", () => {
-      clearTimeout(timer);
-      resolve();
+if (needsBuild) {
+  console.log(`${c.cyan}[Build]${c.reset} ${targetName} をコンパイル中...`);
+
+  try {
+    if (isLinux) {
+      execFileSync("cmake", ["--build", buildDir, "--target", targetName], {
+        cwd: projectRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } else {
+      const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+      const clionNinja = path.join(
+        localAppData,
+        "Programs",
+        "CLion",
+        "bin",
+        "ninja",
+        "win",
+        "x64",
+        "ninja.exe"
+      );
+      const clionCmake = path.join(
+        localAppData,
+        "Programs",
+        "CLion",
+        "bin",
+        "cmake",
+        "win",
+        "x64",
+        "bin",
+        "cmake.exe"
+      );
+
+      if (fs.existsSync(clionNinja) && fs.existsSync(path.join(buildDir, "build.ninja"))) {
+        execFileSync(clionNinja, ["-C", buildDir, targetName], {
+          cwd: projectRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } else {
+        const cmakeCmd = fs.existsSync(clionCmake) ? clionCmake : "cmake";
+        execFileSync(cmakeCmd, ["--build", buildDir, "--target", targetName], {
+          cwd: projectRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      }
+    }
+    console.log(`${c.green}✓ ビルド成功${c.reset}\n`);
+  } catch (err) {
+    console.error(`${c.red}✗ ビルドエラー:${c.reset}`);
+    if (err.stderr && err.stderr.length > 0) console.error(err.stderr.toString());
+    else if (err.stdout && err.stdout.length > 0) console.error(err.stdout.toString());
+    else console.error(err.message || err);
+    process.exit(1);
+  }
+} else {
+  console.log(`${c.green}✓ ソースコード変更なし（ビルドスキップ）${c.reset}\n`);
+}
+
+// 初回実行時のWindows Defenderスキャン＆DLL読み込み遅延（ウォームアップ: Windowsのみ）
+// Defender のスキャンは起動時（最初の約40-50ms）に行われるため、
+// 最も小さいケースを渡しつつ、最大 50ms で安全に打ち切る（重いケースでも絶対に待たせない）
+if (!isLinux) {
+  try {
+    let smallestInputFile = null;
+    let minSize = Infinity;
+    if (fs.existsSync(testDir)) {
+      for (const f of fs.readdirSync(testDir)) {
+        if (/^in\d+\.txt$/.test(f)) {
+          const fp = path.join(testDir, f);
+          const sz = fs.statSync(fp).size;
+          if (sz < minSize) {
+            minSize = sz;
+            smallestInputFile = fp;
+          }
+        }
+      }
+    }
+
+    const warmupInput = smallestInputFile ? fs.readFileSync(smallestInputFile) : "";
+    const warmupProc = spawn(exePath, [], {
+      cwd: contestDir,
+      stdio: ["pipe", "ignore", "ignore"],
     });
-    warmupProc.on("error", () => {
-      clearTimeout(timer);
-      resolve();
+    warmupProc.stdin.end(warmupInput);
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try { warmupProc.kill("SIGKILL"); } catch {}
+        resolve();
+      }, 50);
+      warmupProc.on("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      warmupProc.on("error", () => {
+        clearTimeout(timer);
+        resolve();
+      });
     });
-  });
-} catch {}
+  } catch {}
+}
 
 // 4. テストケースの読み込みとソート
 const testFiles = fs
