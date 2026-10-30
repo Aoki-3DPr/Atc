@@ -16,8 +16,8 @@ if (rawArgs.length === 0) {
   console.error("エラー: コンテスト名またはフォルダ名を指定してください。");
   console.error("使い方: bun run atcoder <コンテスト名/フォルダ名> [取得元コンテストID]");
   console.error("短縮形: bun run c <コンテスト名>          (例: bun run c arc170 / bun run c abc482)");
-  console.error("使い回し作成: bun run arc / bun run agc / bun run ahc / bun run abc");
-  console.error("使い回し取得: bun run arc arc170          (arc フォルダに ARC170 のテストケースを上書き取得)");
+  console.error("使い回し作成: bun run arc / bun run agc / bun run ahc / bun run abc / bun run adt");
+  console.error("使い回し取得: bun run adt adt_all_20240327_1 (adt フォルダにテストケースを上書き取得)");
   console.error("他サイト: bun run codeforces <コンテストID> (例: bun run codeforces 1900)");
   process.exit(1);
 }
@@ -80,7 +80,7 @@ fs.mkdirSync(contestDir, { recursive: true });
 
 // 取得元コンテストと使い回し判定
 const fetchSource = sourceContestArg.trim() || folderName;
-const isPureGenericFolder = /^(abc|arc|agc|ahc|cf|codeforces)$/i.test(folderName) && !sourceContestArg.trim();
+const isPureGenericFolder = /^(abc|arc|agc|ahc|adt|daily|cf|codeforces)$/i.test(folderName) && !sourceContestArg.trim();
 
 // 作成する問題一覧の決定（ABC: a〜g, ARC/AGC: a〜f, AHC: a 等）
 let problems = getDefaultProblems(folderName, platform);

@@ -419,6 +419,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     console.error("例: bun run fetch arc170 arc                 (AtCoder/arc/test に上書き取得・使い回し用)");
     console.error("例: bun run fetch agc065 agc                 (AtCoder/agc/test に上書き取得・使い回し用)");
     console.error("例: bun run fetch ahc030 ahc                 (AtCoder/ahc/test に上書き取得・使い回し用)");
+    console.error("例: bun run fetch adt_all_20240327_1 adt     (AtCoder/adt/test にデイリーケース上書き取得)");
     console.error("例: bun run fetch arc170 a                   (arc170 の A 問題のみ取得)");
     console.error("例: bun run fetch codeforces 1900            (Codeforces/1900/test に取得)");
     process.exit(1);

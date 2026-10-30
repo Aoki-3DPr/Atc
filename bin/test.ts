@@ -97,7 +97,7 @@ if (!fs.existsSync(srcFile)) {
 
 // 1. テストケースの存在確認＆自動取得
 if (!fs.existsSync(testDir) || fs.readdirSync(testDir).filter((f) => f.startsWith("in")).length === 0) {
-  const isGeneric = /^(abc|arc|agc|ahc|cf|codeforces)$/i.test(contest);
+  const isGeneric = /^(abc|arc|agc|ahc|adt|daily|cf|codeforces)$/i.test(contest);
   if (isGeneric) {
     console.error(`${c.red}エラー: テストケースが見つかりません。${c.reset}`);
     console.error(`使い回しフォルダ '${contest}' にテストケースを取得してください:`);

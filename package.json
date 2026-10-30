@@ -18,6 +18,8 @@
     "arc": "bun ./bin/cli.ts atcoder arc",
     "agc": "bun ./bin/cli.ts atcoder agc",
     "ahc": "bun ./bin/cli.ts atcoder ahc",
+    "adt": "bun ./bin/cli.ts atcoder adt",
+    "daily": "bun ./bin/cli.ts atcoder adt",
     "test": "bun ./bin/test.ts",
     "t": "bun ./bin/test.ts",
     "bundle": "bun ./bin/bundle.ts",
