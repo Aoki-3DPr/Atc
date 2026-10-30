@@ -3,20 +3,27 @@
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "contests": "./bin/cli.ts",
+    "atcoder": "./bin/cli.ts",
+    "codeforces": "./bin/cli.ts",
     "bundle": "./bin/bundle.ts",
     "test": "./bin/test.ts",
     "fetch": "./bin/fetch.ts",
     "login": "./bin/login.ts"
   },
   "scripts": {
-    "contests": "bun ./bin/cli.ts",
-    "bundle": "bun ./bin/bundle.ts",
+    "atcoder": "bun ./bin/cli.ts atcoder",
+    "codeforces": "bun ./bin/cli.ts codeforces",
+    "c": "bun ./bin/cli.ts atcoder",
+    "abc": "bun ./bin/cli.ts atcoder abc",
+    "arc": "bun ./bin/cli.ts atcoder arc",
+    "agc": "bun ./bin/cli.ts atcoder agc",
+    "ahc": "bun ./bin/cli.ts atcoder ahc",
     "test": "bun ./bin/test.ts",
-    "fetch": "bun ./bin/fetch.ts",
-    "login": "bun ./bin/login.ts",
-    "c": "bun ./bin/cli.ts",
+    "t": "bun ./bin/test.ts",
+    "bundle": "bun ./bin/bundle.ts",
     "b": "bun ./bin/bundle.ts",
-    "t": "bun ./bin/test.ts"
+    "fetch": "bun ./bin/fetch.ts",
+    "f": "bun ./bin/fetch.ts",
+    "login": "bun ./bin/login.ts"
   }
 }

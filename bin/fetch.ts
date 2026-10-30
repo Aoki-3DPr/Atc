@@ -18,10 +18,36 @@ export interface FetchResult {
 
 export type ContestFetchResults = Record<string, FetchResult>;
 
+export interface AtCoderTaskInfo {
+  label: string;
+  taskId: string;
+  url: string;
+  title: string;
+}
+
+/**
+ * コンテスト名やプレフィックスから標準的な問題リストを取得
+ */
+export function getDefaultProblems(name: string, platform = "atcoder"): string[] {
+  const plat = platform.toLowerCase();
+  if (plat === "codeforces" || plat === "cf") {
+    return ["a", "b", "c", "d", "e", "f"];
+  }
+  const lower = name.toLowerCase();
+  if (/^ahc/i.test(lower)) {
+    return ["a"];
+  }
+  if (/^(arc|agc)/i.test(lower)) {
+    return ["a", "b", "c", "d", "e", "f"];
+  }
+  // ABC や汎用コンテストは a〜g
+  return ["a", "b", "c", "d", "e", "f", "g"];
+}
+
 /**
  * HTMLエンティティのデコード
  */
-function decodeHtml(html: string): string {
+export function decodeHtml(html: string): string {
   return html
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -29,6 +55,21 @@ function decodeHtml(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/\r\n/g, "\n");
+}
+
+/**
+ * 既存テストディレクトリ内の古いテストケースを全消去（随時完全上書き用）
+ */
+export function cleanTestDir(testDir: string): void {
+  if (fs.existsSync(testDir)) {
+    for (const f of fs.readdirSync(testDir)) {
+      if (/^(in|out)\d+\.txt$/.test(f) || f === "info.json") {
+        try {
+          fs.unlinkSync(path.join(testDir, f));
+        } catch {}
+      }
+    }
+  }
 }
 
 /**
@@ -46,12 +87,77 @@ export function getSessionCookie(): string | null {
 }
 
 /**
- * 単一問題のサンプルケースと制限時間を取得
+ * AtCoder: コンテストのタスク一覧ページから問題一覧を自動取得
  */
-export async function fetchProblem(contest: string, problem: string): Promise<FetchResult> {
+export async function getAtCoderTaskList(contest: string): Promise<AtCoderTaskInfo[] | null> {
+  const contestLower = contest.toLowerCase().trim();
+  const url = `https://atcoder.jp/contests/${contestLower}/tasks`;
+
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AtCoder-Tool/1.0",
+  };
+  const session = getSessionCookie();
+  if (session) {
+    headers["Cookie"] = session;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers });
+  } catch {
+    return null;
+  }
+
+  if (!res.ok) return null;
+
+  const html = await res.text();
+  const tbodyMatch = html.match(/<tbody>([\s\S]*?)<\/tbody>/i);
+  if (!tbodyMatch) return null;
+
+  const rows = [...tbodyMatch[1].matchAll(/<tr>([\s\S]*?)<\/tr>/gi)];
+  const tasks: AtCoderTaskInfo[] = [];
+
+  for (const row of rows) {
+    const rowHtml = row[1];
+    const linkMatch = rowHtml.match(/<a\s+href="(\/contests\/[^/]+\/tasks\/([^"]+))">([^<]+)<\/a>/i);
+    if (linkMatch) {
+      const taskPath = linkMatch[1];
+      const taskId = linkMatch[2];
+      const rawLabel = linkMatch[3].trim();
+      const label = rawLabel.toLowerCase();
+
+      const titleMatch = rowHtml.match(/<td>\s*<a[^>]*>([^<]+)<\/a>\s*<\/td>/i);
+      const title = titleMatch ? decodeHtml(titleMatch[1].trim()) : "";
+
+      tasks.push({
+        label,
+        taskId,
+        url: `https://atcoder.jp${taskPath}`,
+        title,
+      });
+    }
+  }
+
+  return tasks.length > 0 ? tasks : null;
+}
+
+/**
+ * AtCoder: 単一問題のサンプルケースと制限時間を取得
+ * @param contest コンテスト名 (例: abc480, arc170, agc065)
+ * @param problem 問題名 (例: a, g)
+ * @param destFolder 保存先フォルダ名 (省略時は contest)
+ * @param taskUrl 直接指定のタスクURL
+ */
+export async function fetchAtCoderProblem(
+  contest: string,
+  problem: string,
+  destFolder?: string,
+  taskUrl?: string
+): Promise<FetchResult> {
   const prob = problem.toLowerCase();
   const contestLower = contest.toLowerCase();
-  const url = `https://atcoder.jp/contests/${contestLower}/tasks/${contestLower}_${prob}`;
+  const saveFolder = (destFolder || contestLower).toLowerCase();
+  const url = taskUrl || `https://atcoder.jp/contests/${contestLower}/tasks/${contestLower}_${prob}`;
 
   const headers: Record<string, string> = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AtCoder-Tool/1.0",
@@ -83,14 +189,14 @@ export async function fetchProblem(contest: string, problem: string): Promise<Fe
 
   const html = await res.text();
 
-  // 1. 実行時間制限の抽出 (例: 実行時間制限: 2 sec または Time Limit: 2.5 sec)
-  let timeLimitMs = 2000; // デフォルト 2秒
+  // 1. 実行時間制限の抽出
+  let timeLimitMs = 2000;
   const timeMatch = html.match(/(?:実行時間制限|Time Limit):\s*([\d\.]+)\s*sec/i);
   if (timeMatch) {
     timeLimitMs = Math.round(parseFloat(timeMatch[1]) * 1000);
   }
 
-  // 2. 日本語セクションの特定（英語セクションとの重複を防ぐ）
+  // 2. 日本語セクションの特定
   let targetSection = html;
   if (html.includes('class="lang-ja"')) {
     const jaPart = html.split('class="lang-ja"')[1];
@@ -111,13 +217,18 @@ export async function fetchProblem(contest: string, problem: string): Promise<Fe
     return { success: false, error: "テストケース（入力例）が見つかりませんでした" };
   }
 
-  // 4. 保存先ディレクトリの準備
-  const testDir = path.join(projectRoot, "contests", contestLower, "test", prob);
+  // 4. 保存先ディレクトリの準備（AtCoder配下）
+  const testDir = path.join(projectRoot, "AtCoder", saveFolder, "test", prob);
   fs.mkdirSync(testDir, { recursive: true });
+
+  // 既存ケースを一旦クリア（使い回し時の混入防止・随時完全上書き）
+  cleanTestDir(testDir);
 
   // info.json の保存
   const info = {
+    platform: "AtCoder",
     contest: contestLower,
+    destFolder: saveFolder,
     problem: prob,
     timeLimitMs,
     sampleCount: inputMatches.length,
@@ -138,15 +249,130 @@ export async function fetchProblem(contest: string, problem: string): Promise<Fe
 }
 
 /**
- * コンテスト全体の全問題（a〜g）を一括取得
+ * Codeforces: 単一問題のサンプルケース取得（拡張対応）
  */
-export async function fetchContest(contest: string): Promise<ContestFetchResults> {
-  const problems = ["a", "b", "c", "d", "e", "f", "g"];
-  console.log(`[Fetch] ${contest} のテストケースを取得中...`);
+export async function fetchCodeforcesProblem(
+  contest: string,
+  problem: string,
+  destFolder?: string
+): Promise<FetchResult> {
+  const prob = problem.toUpperCase();
+  const contestId = contest.trim();
+  const saveFolder = (destFolder || contestId).trim();
+  const url = `https://codeforces.com/contest/${contestId}/problem/${prob}`;
+
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Codeforces-Tool/1.0",
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers });
+  } catch (err: any) {
+    return { success: false, error: `通信エラー: ${err.message}` };
+  }
+
+  if (!res.ok) {
+    return { success: false, error: `HTTPエラー: ${res.status}` };
+  }
+
+  const html = await res.text();
+
+  let timeLimitMs = 2000;
+  const timeMatch = html.match(/time limit per test<\/div>([\d\.]+)\s*seconds?/i);
+  if (timeMatch) {
+    timeLimitMs = Math.round(parseFloat(timeMatch[1]) * 1000);
+  }
+
+  const inputMatches = [...html.matchAll(/<div class="input">[\s\S]*?<pre>([\s\S]*?)<\/pre>/gi)];
+  const outputMatches = [...html.matchAll(/<div class="output">[\s\S]*?<pre>([\s\S]*?)<\/pre>/gi)];
+
+  if (inputMatches.length === 0) {
+    return { success: false, error: "テストケースが見つかりませんでした" };
+  }
+
+  const testDir = path.join(projectRoot, "Codeforces", saveFolder, "test", prob.toLowerCase());
+  fs.mkdirSync(testDir, { recursive: true });
+  cleanTestDir(testDir);
+
+  const info = {
+    platform: "Codeforces",
+    contest: contestId,
+    destFolder: saveFolder,
+    problem: prob,
+    timeLimitMs,
+    sampleCount: inputMatches.length,
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(path.join(testDir, "info.json"), JSON.stringify(info, null, 2), "utf8");
+
+  const count = Math.min(inputMatches.length, outputMatches.length);
+  for (let i = 0; i < count; i++) {
+    const inText = decodeHtml(inputMatches[i][1].replace(/<div class="test-example-line">/g, "").replace(/<\/div>/g, "\n")).trim() + "\n";
+    const outText = decodeHtml(outputMatches[i][1]).trim() + "\n";
+    fs.writeFileSync(path.join(testDir, `in${i + 1}.txt`), inText, "utf8");
+    fs.writeFileSync(path.join(testDir, `out${i + 1}.txt`), outText, "utf8");
+  }
+
+  return { success: true, count, timeLimitMs, testDir };
+}
+
+/**
+ * 汎用: プラットフォーム自動判別付き単一問題フェッチ
+ */
+export async function fetchProblem(
+  contest: string,
+  problem: string,
+  platform = "atcoder",
+  destFolder?: string
+): Promise<FetchResult> {
+  const plat = platform.toLowerCase();
+  if (plat === "codeforces" || plat === "cf") {
+    return fetchCodeforcesProblem(contest, problem, destFolder);
+  }
+  return fetchAtCoderProblem(contest, problem, destFolder);
+}
+
+/**
+ * コンテスト全体の全問題を一括取得（ABC, ARC, AGC, AHC等に対応）
+ */
+export async function fetchContest(
+  contest: string,
+  platform = "atcoder",
+  problems?: string[],
+  destFolder?: string
+): Promise<ContestFetchResults> {
+  const plat = platform.toLowerCase();
+  const saveTarget = destFolder || contest;
+  console.log(`[Fetch] [${platform.toUpperCase()}] ${contest} のテストケースを取得中 (保存先: ${saveTarget})...`);
 
   const results: ContestFetchResults = {};
-  for (const p of problems) {
-    const res = await fetchProblem(contest, p);
+
+  // AtCoder で特定の問題リストが未指定の場合、タスク一覧ページを自動取得して正確な問題リストを確定
+  if (plat === "atcoder" && (!problems || problems.length === 0)) {
+    const taskList = await getAtCoderTaskList(contest);
+    if (taskList && taskList.length > 0) {
+      for (const t of taskList) {
+        const res = await fetchAtCoderProblem(contest, t.label, destFolder, t.url);
+        results[t.label] = res;
+        if (res.success) {
+          console.log(`  ✓ 問題 ${t.label.toUpperCase()}: ${res.count} ケース (制限時間: ${res.timeLimitMs}ms)`);
+        } else {
+          console.log(`  - 問題 ${t.label.toUpperCase()}: ${res.error}`);
+        }
+      }
+      return results;
+    }
+  }
+
+  // フォールバック または 指定問題リスト
+  const probList =
+    problems && problems.length > 0
+      ? problems
+      : getDefaultProblems(contest, platform);
+
+  for (const p of probList) {
+    const res = await fetchProblem(contest, p, platform, destFolder);
     results[p] = res;
     if (res.success) {
       console.log(`  ✓ 問題 ${p.toUpperCase()}: ${res.count} ケース (制限時間: ${res.timeLimitMs}ms)`);
@@ -161,22 +387,49 @@ export async function fetchContest(contest: string): Promise<ContestFetchResults
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error("使い方: bun run fetch <コンテスト名> [問題名]");
-    console.error("例: bun run fetch abc350");
-    console.error("例: bun run fetch abc350 a");
+    console.error("使い方: bun run fetch [プラットフォーム] <コンテスト名> [問題名/保存先] [保存先フォルダ]");
+    console.error("例: bun run fetch abc480                     (AtCoder/abc480/test に全問題取得)");
+    console.error("例: bun run fetch arc170                     (AtCoder/arc170/test に全問題取得)");
+    console.error("例: bun run fetch arc170 arc                 (AtCoder/arc/test に上書き取得・使い回し用)");
+    console.error("例: bun run fetch agc065 agc                 (AtCoder/agc/test に上書き取得・使い回し用)");
+    console.error("例: bun run fetch ahc030 ahc                 (AtCoder/ahc/test に上書き取得・使い回し用)");
+    console.error("例: bun run fetch arc170 a                   (arc170 の A 問題のみ取得)");
+    console.error("例: bun run fetch codeforces 1900            (Codeforces/1900/test に取得)");
     process.exit(1);
   }
 
-  const contestName = args[0].replace(/^contests[\\/]+/, "");
-  if (args.length >= 2) {
-    const prob = args[1].toLowerCase();
-    const res = await fetchProblem(contestName, prob);
+  let plat = "atcoder";
+  let contest = "";
+  let prob = "";
+  let destFolder = "";
+
+  const cleanArgs = [...args];
+  if (["atcoder", "codeforces", "cf"].includes(cleanArgs[0].toLowerCase())) {
+    plat = cleanArgs.shift()!.toLowerCase();
+  }
+
+  contest = (cleanArgs.shift() || "").replace(/^(AtCoder|Codeforces|contests)[\\/]+/i, "");
+
+  if (cleanArgs.length === 1) {
+    const nextArg = cleanArgs[0];
+    if (nextArg.length === 1 && /^[a-zA-Z]$/.test(nextArg)) {
+      prob = nextArg;
+    } else {
+      destFolder = nextArg;
+    }
+  } else if (cleanArgs.length >= 2) {
+    prob = cleanArgs[0];
+    destFolder = cleanArgs[1];
+  }
+
+  if (prob) {
+    const res = await fetchProblem(contest, prob, plat, destFolder || undefined);
     if (res.success) {
-      console.log(`✓ ${contestName} [${prob.toUpperCase()}]: ${res.count} 件取得完了 (制限時間: ${res.timeLimitMs}ms)`);
+      console.log(`✓ [${plat.toUpperCase()}] ${contest} [${prob.toUpperCase()}]: ${res.count} 件取得完了 (制限時間: ${res.timeLimitMs}ms)`);
     } else {
       console.error(`✗ エラー: ${res.error}`);
     }
   } else {
-    await fetchContest(contestName);
+    await fetchContest(contest, plat, undefined, destFolder || undefined);
   }
 }

@@ -9,32 +9,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 
-// 引数の取得
-const args = process.argv.slice(2);
-if (args.length === 0) {
-  console.error("エラー: 対象のファイルを指定してください。");
-  console.error("使い方: bun run bundle <ファイルパス または コンテスト名 問題名>");
-  console.error("例: bun run bundle contests/abc481/a.cpp");
-  console.error("例: bun run bundle abc481 a");
-  console.error("例: bun run b abc481 a");
-  process.exit(1);
-}
-
-// ファイルパスの解決
-let targetFilePath = "";
-if (args.length >= 2 && !args[0].includes("/") && !args[0].includes("\\")) {
-  targetFilePath = path.join(projectRoot, "contests", args[0], `${args[1]}.cpp`);
-} else {
-  targetFilePath = path.isAbsolute(args[0])
-    ? args[0]
-    : path.resolve(projectRoot, args[0]);
-}
-
-if (!fs.existsSync(targetFilePath)) {
-  console.error(`エラー: ファイルが見つかりません: ${targetFilePath}`);
-  process.exit(1);
-}
-
 /**
  * ライブラリファイルからクラス等の本体だけを抽出する関数
  */
@@ -195,24 +169,61 @@ export function bundle(sourceFilePath: string): string {
   return outputParts.join("\n");
 }
 
-// 実行
-const bundledCode = bundle(targetFilePath);
+// CLIから直接実行された場合
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.length === 0) {
+    console.error("エラー: 対象のファイルを指定してください。");
+    console.error("使い方: bun run bundle <コンテスト名> <問題名>");
+    console.error("短縮形: bun run b <コンテスト名> <問題名>");
+    console.error("例: bun run b abc480 g");
+    console.error("例: bun run b abc g              (使い回しフォルダ abc/g.cpp)");
+    console.error("例: bun run b AtCoder/abc480/g.cpp");
+    console.error("例: bun run b codeforces 1900 a");
+    process.exit(1);
+  }
 
-// クリップボードにコピー (Windows clip / WSL clip.exe)
-let copiedToClipboard = false;
-try {
-  const clipCmd = process.platform === "win32" ? "clip" : "clip.exe";
-  execSync(clipCmd, { input: bundledCode, stdio: ["pipe", "ignore", "ignore"] });
-  copiedToClipboard = true;
-} catch {
-  // clip が使えない環境でもエラーにしない
-}
+  let targetFilePath = "";
 
-console.log("==================================================");
-console.log(`対象: ${path.relative(projectRoot, targetFilePath)}`);
-if (copiedToClipboard) {
-  console.log("✅ クリップボードにコピーしました！ (AtCoder提出欄にそのまま Ctrl+V 可能)");
-} else {
-  console.log("⚠️ クリップボードへの自動コピーはスキップされました。");
+  if (rawArgs.length >= 3 && ["atcoder", "codeforces", "cf", "ac"].includes(rawArgs[0].toLowerCase())) {
+    const plat = rawArgs[0].toLowerCase() === "codeforces" || rawArgs[0].toLowerCase() === "cf" ? "Codeforces" : "AtCoder";
+    const contest = rawArgs[1].toLowerCase().replace(new RegExp(`^(${plat}|contests)[\\\\/]+`, "i"), "");
+    const prob = rawArgs[2].toLowerCase().replace(/\.cpp$/, "");
+    targetFilePath = path.join(projectRoot, plat, contest, `${prob}.cpp`);
+  } else if (rawArgs.length >= 2 && !rawArgs[0].includes("/") && !rawArgs[0].includes("\\")) {
+    const contest = rawArgs[0].toLowerCase();
+    const prob = rawArgs[1].toLowerCase().replace(/\.cpp$/, "");
+    if (fs.existsSync(path.join(projectRoot, "Codeforces", contest, `${prob}.cpp`))) {
+      targetFilePath = path.join(projectRoot, "Codeforces", contest, `${prob}.cpp`);
+    } else {
+      targetFilePath = path.join(projectRoot, "AtCoder", contest, `${prob}.cpp`);
+    }
+  } else {
+    targetFilePath = path.isAbsolute(rawArgs[0])
+      ? rawArgs[0]
+      : path.resolve(projectRoot, rawArgs[0]);
+  }
+
+  if (!fs.existsSync(targetFilePath)) {
+    console.error(`エラー: ファイルが見つかりません: ${targetFilePath}`);
+    process.exit(1);
+  }
+
+  const bundledCode = bundle(targetFilePath);
+
+  let copiedToClipboard = false;
+  try {
+    const clipCmd = process.platform === "win32" ? "clip" : "clip.exe";
+    execSync(clipCmd, { input: bundledCode, stdio: ["pipe", "ignore", "ignore"] });
+    copiedToClipboard = true;
+  } catch {}
+
+  console.log("==================================================");
+  console.log(`対象: ${path.relative(projectRoot, targetFilePath)}`);
+  if (copiedToClipboard) {
+    console.log("✅ クリップボードにコピーしました！ (AtCoder/Codeforces提出欄にそのまま Ctrl+V 可能)");
+  } else {
+    console.log("⚠️ クリップボードへの自動コピーはスキップされました。");
+  }
+  console.log("==================================================");
 }
-console.log("==================================================");

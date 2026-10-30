@@ -26,38 +26,67 @@ const c = {
 };
 
 // 引数パース
-const args = process.argv.slice(2);
-if (args.length === 0) {
+const rawArgs = process.argv.slice(2);
+if (rawArgs.length === 0) {
   console.error("エラー: コンテスト名と問題名を指定してください。");
   console.error("使い方: bun run test <コンテスト名> <問題名>");
   console.error("短縮形: bun run t <コンテスト名> <問題名>");
-  console.error("例: bun run t abc350 a");
-  console.error("例: bun run t contests/abc350/a.cpp");
+  console.error("例: bun run t abc480 g");
+  console.error("例: bun run t AtCoder/abc480/g.cpp");
+  console.error("例: bun run t codeforces 1900 a");
   process.exit(1);
 }
 
+let platform = "AtCoder";
 let contest = "";
 let prob = "";
 
-if (args.length >= 2) {
-  contest = args[0].replace(/^contests[\\/]+/, "").toLowerCase();
-  prob = args[1].toLowerCase().replace(/\.cpp$/, "");
-} else {
-  // パス形式の場合 (例: contests/abc350/a.cpp)
-  const norm = args[0].replace(/\\/g, "/");
-  const match = norm.match(/contests\/([^/]+)\/([a-zA-Z0-9_-]+)\.cpp$/i);
+// パターン 1: 3引数 (例: atcoder abc480 g / codeforces 1900 a)
+if (rawArgs.length >= 3 && ["atcoder", "codeforces", "cf", "ac"].includes(rawArgs[0].toLowerCase())) {
+  const p = rawArgs[0].toLowerCase();
+  platform = p === "codeforces" || p === "cf" ? "Codeforces" : "AtCoder";
+  contest = rawArgs[1].toLowerCase().replace(new RegExp(`^(${platform}|contests)[\\\\/]+`, "i"), "");
+  prob = rawArgs[2].toLowerCase().replace(/\.cpp$/, "");
+}
+// パターン 2: 2引数 (例: abc480 g)
+else if (rawArgs.length >= 2) {
+  const p1 = rawArgs[0].replace(/\\/g, "/");
+  const match = p1.match(/^(AtCoder|Codeforces)\/([^/]+)$/i);
+  if (match) {
+    platform = match[1].toLowerCase() === "codeforces" ? "Codeforces" : "AtCoder";
+    contest = match[2].toLowerCase();
+  } else {
+    contest = rawArgs[0].toLowerCase().replace(/^(AtCoder|Codeforces|contests)[\\/]+/i, "");
+    // AtCoder と Codeforces のどちらにファイルが存在するか自動判定
+    if (fs.existsSync(path.join(projectRoot, "Codeforces", contest))) {
+      platform = "Codeforces";
+    } else {
+      platform = "AtCoder";
+    }
+  }
+  prob = rawArgs[1].toLowerCase().replace(/\.cpp$/, "");
+}
+// パターン 3: パス形式 (例: AtCoder/abc480/g.cpp や contests/abc480/g.cpp)
+else {
+  const norm = rawArgs[0].replace(/\\/g, "/");
+  const match = norm.match(/(?:(?:AtCoder|Codeforces|contests)\/)?([^/]+)\/([a-zA-Z0-9_-]+)\.cpp$/i);
   if (match) {
     contest = match[1].toLowerCase();
     prob = match[2].toLowerCase();
+    if (/Codeforces/i.test(norm) || fs.existsSync(path.join(projectRoot, "Codeforces", contest))) {
+      platform = "Codeforces";
+    } else {
+      platform = "AtCoder";
+    }
   } else {
     console.error("エラー: 問題の指定形式が正しくありません。");
-    console.error("例: bun run t abc350 a");
+    console.error("例: bun run t abc480 g");
     process.exit(1);
   }
 }
 
-const targetName = `contests_${contest}_${prob}`;
-const contestDir = path.join(projectRoot, "contests", contest);
+const targetName = `${platform}_${contest}_${prob}`;
+const contestDir = path.join(projectRoot, platform, contest);
 const srcFile = path.join(contestDir, `${prob}.cpp`);
 const testDir = path.join(contestDir, "test", prob);
 
@@ -68,8 +97,16 @@ if (!fs.existsSync(srcFile)) {
 
 // 1. テストケースの存在確認＆自動取得
 if (!fs.existsSync(testDir) || fs.readdirSync(testDir).filter((f) => f.startsWith("in")).length === 0) {
-  console.log(`${c.cyan}[Auto-Fetch]${c.reset} テストケースが見つからないため、AtCoderから自動取得します...`);
-  const fetchRes = await fetchProblem(contest, prob);
+  const isGeneric = /^(abc|arc|agc|ahc|cf|codeforces)$/i.test(contest);
+  if (isGeneric) {
+    console.error(`${c.red}エラー: テストケースが見つかりません。${c.reset}`);
+    console.error(`使い回しフォルダ '${contest}' にテストケースを取得してください:`);
+    console.error(`  bun run fetch <コンテスト名> ${contest}   (例: bun run fetch ${contest}100 ${contest})`);
+    console.error(`  または bun run ${contest} <コンテスト名>  (例: bun run ${contest} ${contest}100)`);
+    process.exit(1);
+  }
+  console.log(`${c.cyan}[Auto-Fetch]${c.reset} テストケースが見つからないため、自動取得します...`);
+  const fetchRes = await fetchProblem(contest, prob, platform, contest);
   if (!fetchRes.success) {
     console.error(`${c.red}テストケースの取得に失敗しました: ${fetchRes.error}${c.reset}`);
     process.exit(1);
@@ -89,14 +126,36 @@ if (fs.existsSync(infoPath)) {
 
 // 3. CMake での自動コンパイル
 const isLinux = process.platform === "linux";
-const buildDir = path.join(
-  projectRoot,
-  isLinux ? "cmake-build-debug-wsl" : "cmake-build-debug-mingw"
-);
+const useShm = isLinux && fs.existsSync("/dev/shm");
+const buildDir = useShm
+  ? "/dev/shm/APG4b-build"
+  : path.join(projectRoot, isLinux ? "cmake-build-debug-wsl" : "cmake-build-debug-mingw");
+
 const exePath = path.join(
   buildDir,
   isLinux ? targetName : `${targetName}.exe`
 );
+
+// Linux (/dev/shm) 環境での CMake 初回セットアップ自動化
+if (isLinux) {
+  const ninjaFile = path.join(buildDir, "build.ninja");
+  const makeFile = path.join(buildDir, "Makefile");
+  if (!fs.existsSync(ninjaFile) && !fs.existsSync(makeFile)) {
+    console.log(`${c.cyan}[Setup]${c.reset} ${useShm ? "/dev/shm (RAMディスク)" : "WSL"} 上にビルド環境を初期化中...`);
+    fs.mkdirSync(buildDir, { recursive: true });
+    try {
+      execFileSync("cmake", ["-B", buildDir, "-S", projectRoot, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug"], {
+        cwd: projectRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch {
+      execFileSync("cmake", ["-B", buildDir, "-S", projectRoot, "-DCMAKE_BUILD_TYPE=Debug"], {
+        cwd: projectRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
+  }
+}
 
 let needsBuild = true;
 if (fs.existsSync(exePath) && fs.existsSync(srcFile)) {
@@ -119,15 +178,25 @@ if (fs.existsSync(exePath) && fs.existsSync(srcFile)) {
   }
 }
 
+let buildDurationMs = 0;
+
 if (needsBuild) {
   console.log(`${c.cyan}[Build]${c.reset} ${targetName} をコンパイル中...`);
+  const buildStart = performance.now();
 
   try {
     if (isLinux) {
-      execFileSync("cmake", ["--build", buildDir, "--target", targetName], {
-        cwd: projectRoot,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      if (fs.existsSync(path.join(buildDir, "build.ninja"))) {
+        execFileSync("ninja", ["-C", buildDir, targetName], {
+          cwd: projectRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } else {
+        execFileSync("cmake", ["--build", buildDir, "--target", targetName], {
+          cwd: projectRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      }
     } else {
       const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
       const clionNinja = path.join(
@@ -165,7 +234,8 @@ if (needsBuild) {
         });
       }
     }
-    console.log(`${c.green}✓ ビルド成功${c.reset}\n`);
+    buildDurationMs = Math.round(performance.now() - buildStart);
+    console.log(`${c.green}✓ ビルド成功${c.reset} ${c.gray}(コンパイル時間: ${buildDurationMs} ms)${c.reset}\n`);
   } catch (err: any) {
     console.error(`${c.red}✗ ビルドエラー:${c.reset}`);
     if (err.stderr && err.stderr.length > 0) console.error(err.stderr.toString());
@@ -174,7 +244,7 @@ if (needsBuild) {
     process.exit(1);
   }
 } else {
-  console.log(`${c.green}✓ ソースコード変更なし（ビルドスキップ）${c.reset}\n`);
+  console.log(`${c.green}✓ ソースコード変更なし（ビルドスキップ: 0 ms）${c.reset}\n`);
 }
 
 // 初回実行時のWindows Defenderスキャン＆DLL読み込み遅延（ウォームアップ: Windowsのみ）
@@ -229,7 +299,7 @@ const testFiles = fs
   });
 
 console.log(`${c.bold}==================================================${c.reset}`);
-console.log(`問題: ${c.cyan}${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
+console.log(`問題: ${c.cyan}[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
 console.log(`${c.bold}==================================================${c.reset}\n`);
 
 interface TestResult {
@@ -376,14 +446,15 @@ for (let i = 0; i < testFiles.length; i++) {
 }
 
 // 6. サマリー表示
+const buildSummaryStr = needsBuild ? `コンパイル: ${buildDurationMs} ms / ` : "コンパイル: 0 ms (スキップ) / ";
 console.log(`${c.bold}==================================================${c.reset}`);
 if (passedCount === testFiles.length) {
   console.log(
-    `${c.green}${c.bold}🎉 ALL SAMPLES PASSED!${c.reset} (${passedCount}/${testFiles.length} ケース合格 / 最大時間: ${Math.round(maxTimeMs)} ms)`
+    `${c.green}${c.bold}🎉 ALL SAMPLES PASSED!${c.reset} (${passedCount}/${testFiles.length} ケース合格 / ${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
   );
 } else {
   console.log(
-    `${c.red}${c.bold}⚠️ RESULT:${c.reset} ${passedCount}/${testFiles.length} ケース合格 (最大時間: ${Math.round(maxTimeMs)} ms)`
+    `${c.red}${c.bold}⚠️ RESULT:${c.reset} ${passedCount}/${testFiles.length} ケース合格 (${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
   );
 }
 console.log(`${c.bold}==================================================${c.reset}`);
