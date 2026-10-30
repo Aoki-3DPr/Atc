@@ -40,8 +40,8 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
 
 # プロジェクト内の競技プログラミングソースコードを探索
-# node_modules やテストケース、各種キャッシュへの無駄な再帰探索を防止して高速化
-file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
+# CONFIGURE_DEPENDS を外して、コード変更ごとの無駄な全ディレクトリスキャン＆フリーズを根絶
+file(GLOB_RECURSE SRC_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/AtCoder/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/Codeforces/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/apg4b/*.cpp"
