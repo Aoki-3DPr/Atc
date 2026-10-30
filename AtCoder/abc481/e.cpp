@@ -16,13 +16,13 @@ ll num(pair<ll, ll>& p) {
 }
 
 ll kurosu(pair<ll, ll>& a, pair<ll, ll>& b) {
-	
+	return a.first * b.second - b.first * a.second;
 }
 
 bool compare(pair<ll, ll>& a, pair<ll, ll>& b) {
 	if (num(a) < num(b)) return true;
 	else if (num(a) > num(b)) return false;
-	if (a.first * b.second - b.first * a.second > 0) return true;
+	if (kurosu(a, b) > 0) return true;
 	else return false;
 }
 
@@ -41,8 +41,10 @@ int solve() {
 		ll j = 1;
 		for (ll i = 0; i < n; i++) {
 			if (i >= j) j = i + 1;
-			while ()
+			while (kurosu(a[i], a[j % n]) > 0) j++;
+			ans = max(ans, j - i);
 		}
+		cout << ans << endl;
 	}
 	return 0;
 }
