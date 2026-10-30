@@ -39,16 +39,21 @@ endif()
 # 各問題コードから `#include "SegmentTree.cpp"` やヘッダーファイルを直接 include 可能
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
 
-# プロジェクト内の全 .cpp / .c ファイルを自動検出
-# CONFIGURE_DEPENDS により、新しいファイルやフォルダを追加した際に自動認識
+# プロジェクト内の競技プログラミングソースコードを探索
+# node_modules やテストケース、各種キャッシュへの無駄な再帰探索を防止して高速化
 file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AtCoder/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Codeforces/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/apg4b/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/apg4b/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/template.cpp"
 )
 
 foreach(SRC ${SRC_FILES})
-    # ビルド出力ディレクトリ、.idea、.git などを除外
+    # ビルド出力ディレクトリ、.idea、.git、node_modules などを除外
     if(SRC MATCHES "/cmake-build-" OR SRC MATCHES "\\\\cmake-build-" OR
+       SRC MATCHES "/node_modules" OR SRC MATCHES "\\\\node_modules" OR
        SRC MATCHES "/\\.idea" OR SRC MATCHES "\\\\\\.idea" OR
        SRC MATCHES "/\\.git" OR SRC MATCHES "\\\\\\.git")
         continue()

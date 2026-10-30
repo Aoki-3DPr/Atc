@@ -123,15 +123,17 @@ if (skipped.length > 0) {
 }
 console.log(`==================================================\n`);
 
-// CLion に CMake の自動再ロードを検知させるため、CMakeLists.txt の末尾コメントを更新
-const cmakeListsPath = path.join(projectRoot, "CMakeLists.txt");
-if (fs.existsSync(cmakeListsPath)) {
-  const cmakeContent = fs.readFileSync(cmakeListsPath, "utf8");
-  const stampLine = `# Auto-reload trigger: ${platform}_${folderName} (${new Date().toISOString()})`;
-  const updatedContent =
-    cmakeContent.replace(/\r?\n# Auto-reload trigger:.*$/s, "").trimEnd() +
-    `\n\n${stampLine}\n`;
-  fs.writeFileSync(cmakeListsPath, updatedContent, "utf8");
+// 新規ファイルが作成された場合のみ、CLion に CMake の自動再ロードを検知させる
+if (created.length > 0) {
+  const cmakeListsPath = path.join(projectRoot, "CMakeLists.txt");
+  if (fs.existsSync(cmakeListsPath)) {
+    const cmakeContent = fs.readFileSync(cmakeListsPath, "utf8");
+    const stampLine = `# Auto-reload trigger: ${platform}_${folderName} (${new Date().toISOString()})`;
+    const updatedContent =
+      cmakeContent.replace(/\r?\n# Auto-reload trigger:.*$/s, "").trimEnd() +
+      `\n\n${stampLine}\n`;
+    fs.writeFileSync(cmakeListsPath, updatedContent, "utf8");
+  }
 }
 
 // テストケースの自動取得
