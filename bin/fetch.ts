@@ -91,6 +91,20 @@ export function getSessionCookie(): string | null {
 }
 
 /**
+ * 保存済みのCodeforcesセッションCookieを取得（Cloudflare通過用 cf_clearance 等）
+ */
+export function getCodeforcesSessionCookie(): string | null {
+  const sessionPath = path.join(projectRoot, ".codeforces_session");
+  if (fs.existsSync(sessionPath)) {
+    const content = fs.readFileSync(sessionPath, "utf8").trim();
+    if (content) {
+      return content;
+    }
+  }
+  return null;
+}
+
+/**
  * AtCoder: コンテストのタスク一覧ページから問題一覧を自動取得
  */
 export async function getAtCoderTaskList(contest: string): Promise<AtCoderTaskInfo[] | null> {
@@ -287,9 +301,17 @@ export async function fetchCodeforcesProblem(
   const saveFolder = (destFolder || contestId).trim();
   const url = `https://codeforces.com/contest/${contestId}/problem/${prob}`;
 
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Codeforces-Tool/1.0",
+  const headers: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
   };
+
+  const session = getCodeforcesSessionCookie();
+  if (session) {
+    headers["Cookie"] = session;
+  }
 
   let res: Response;
   try {
@@ -298,11 +320,27 @@ export async function fetchCodeforcesProblem(
     return { success: false, error: `通信エラー: ${err.message}` };
   }
 
+  if (res.status === 403 || res.status === 503) {
+    return {
+      success: false,
+      error:
+        "Cloudflareによるアクセス制限 (403/503) です。'bun run login codeforces' でブラウザの認証Cookieを設定してください。",
+    };
+  }
+
   if (!res.ok) {
     return { success: false, error: `HTTPエラー: ${res.status}` };
   }
 
   const html = await res.text();
+
+  if (html.includes("Just a moment...") || html.includes("Checking your browser")) {
+    return {
+      success: false,
+      error:
+        "Cloudflareの人間確認画面です。ブラウザでCodeforcesを開き、'bun run login codeforces' でCookieを設定してください。",
+    };
+  }
 
   let timeLimitMs = 2000;
   const timeMatch = html.match(/time limit per test<\/div>([\d\.]+)\s*seconds?/i);

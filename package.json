@@ -26,6 +26,10 @@
     "b": "bun ./bin/bundle.ts",
     "fetch": "bun ./bin/fetch.ts",
     "f": "bun ./bin/fetch.ts",
-    "login": "bun ./bin/login.ts"
+    "login": "bun ./bin/login.ts",
+    "login:atcoder": "bun ./bin/login.ts atcoder",
+    "login:codeforces": "bun ./bin/login.ts codeforces",
+    "help": "bun ./bin/help.ts",
+    "h": "bun ./bin/help.ts"
   }
 }

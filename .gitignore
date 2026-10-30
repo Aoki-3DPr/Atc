@@ -8,9 +8,10 @@ CMakeCache.txt
 # Node.js
 node_modules/
 
-# AtCoder Testcases & Session
+# AtCoder & Codeforces Session
 **/test/
 .atcoder_session
+.codeforces_session
 
 # Bundled submission files
 *_bundled.cpp
