@@ -1,11 +1,11 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { fetchProblem } from "./fetch.js";
+import { fetchProblem } from "./fetch.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,9 +29,10 @@ const c = {
 const args = process.argv.slice(2);
 if (args.length === 0) {
   console.error("エラー: コンテスト名と問題名を指定してください。");
-  console.error("使い方: npm run test <コンテスト名> <問題名>");
-  console.error("例: npm run test abc350 a");
-  console.error("例: npm run test contests/abc350/a.cpp");
+  console.error("使い方: bun run test <コンテスト名> <問題名>");
+  console.error("短縮形: bun run t <コンテスト名> <問題名>");
+  console.error("例: bun run t abc350 a");
+  console.error("例: bun run t contests/abc350/a.cpp");
   process.exit(1);
 }
 
@@ -50,7 +51,7 @@ if (args.length >= 2) {
     prob = match[2].toLowerCase();
   } else {
     console.error("エラー: 問題の指定形式が正しくありません。");
-    console.error("例: npm run test abc350 a");
+    console.error("例: bun run t abc350 a");
     process.exit(1);
   }
 }
@@ -165,7 +166,7 @@ if (needsBuild) {
       }
     }
     console.log(`${c.green}✓ ビルド成功${c.reset}\n`);
-  } catch (err) {
+  } catch (err: any) {
     console.error(`${c.red}✗ ビルドエラー:${c.reset}`);
     if (err.stderr && err.stderr.length > 0) console.error(err.stderr.toString());
     else if (err.stdout && err.stdout.length > 0) console.error(err.stdout.toString());
@@ -177,11 +178,9 @@ if (needsBuild) {
 }
 
 // 初回実行時のWindows Defenderスキャン＆DLL読み込み遅延（ウォームアップ: Windowsのみ）
-// Defender のスキャンは起動時（最初の約40-50ms）に行われるため、
-// 最も小さいケースを渡しつつ、最大 50ms で安全に打ち切る（重いケースでも絶対に待たせない）
 if (!isLinux) {
   try {
-    let smallestInputFile = null;
+    let smallestInputFile: string | null = null;
     let minSize = Infinity;
     if (fs.existsSync(testDir)) {
       for (const f of fs.readdirSync(testDir)) {
@@ -202,7 +201,7 @@ if (!isLinux) {
       stdio: ["pipe", "ignore", "ignore"],
     });
     warmupProc.stdin.end(warmupInput);
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         try { warmupProc.kill("SIGKILL"); } catch {}
         resolve();
@@ -233,10 +232,21 @@ console.log(`${c.bold}==================================================${c.rese
 console.log(`問題: ${c.cyan}${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
 console.log(`${c.bold}==================================================${c.reset}\n`);
 
+interface TestResult {
+  status: "AC" | "WA" | "TLE" | "RE";
+  elapsedMs: number;
+  input: string;
+  expected: string;
+  actual: string;
+  stderr: string;
+  code?: number | null;
+  error?: string;
+}
+
 /**
  * 1ケース実行関数
  */
-function runSingleTest(inFile, outFile, testNum) {
+function runSingleTest(inFile: string, outFile: string, testNum: number): Promise<TestResult> {
   return new Promise((resolve) => {
     const inputData = fs.readFileSync(inFile, "utf8");
     const expectedOutput = fs.existsSync(outFile) ? fs.readFileSync(outFile, "utf8") : "";

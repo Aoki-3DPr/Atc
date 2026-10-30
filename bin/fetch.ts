@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import path from "node:path";
@@ -8,10 +8,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 
+export interface FetchResult {
+  success: boolean;
+  count?: number;
+  timeLimitMs?: number;
+  testDir?: string;
+  error?: string;
+}
+
+export type ContestFetchResults = Record<string, FetchResult>;
+
 /**
  * HTMLエンティティのデコード
  */
-function decodeHtml(html) {
+function decodeHtml(html: string): string {
   return html
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -24,7 +34,7 @@ function decodeHtml(html) {
 /**
  * 保存済みのAtCoderセッションCookieを取得
  */
-export function getSessionCookie() {
+export function getSessionCookie(): string | null {
   const sessionPath = path.join(projectRoot, ".atcoder_session");
   if (fs.existsSync(sessionPath)) {
     const content = fs.readFileSync(sessionPath, "utf8").trim();
@@ -38,12 +48,12 @@ export function getSessionCookie() {
 /**
  * 単一問題のサンプルケースと制限時間を取得
  */
-export async function fetchProblem(contest, problem) {
+export async function fetchProblem(contest: string, problem: string): Promise<FetchResult> {
   const prob = problem.toLowerCase();
   const contestLower = contest.toLowerCase();
   const url = `https://atcoder.jp/contests/${contestLower}/tasks/${contestLower}_${prob}`;
 
-  const headers = {
+  const headers: Record<string, string> = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AtCoder-Tool/1.0",
   };
   const session = getSessionCookie();
@@ -51,10 +61,10 @@ export async function fetchProblem(contest, problem) {
     headers["Cookie"] = session;
   }
 
-  let res;
+  let res: Response;
   try {
     res = await fetch(url, { headers });
-  } catch (err) {
+  } catch (err: any) {
     return { success: false, error: `通信エラー: ${err.message}` };
   }
 
@@ -64,7 +74,7 @@ export async function fetchProblem(contest, problem) {
   if (res.status === 403 || res.status === 302 || res.url.includes("/login")) {
     return {
       success: false,
-      error: "アクセス制限（本番コンテスト中の可能性があります）。'npm run login' でログイン設定をしてください。",
+      error: "アクセス制限（本番コンテスト中の可能性があります）。'bun run login' でログイン設定をしてください。",
     };
   }
   if (!res.ok) {
@@ -130,11 +140,11 @@ export async function fetchProblem(contest, problem) {
 /**
  * コンテスト全体の全問題（a〜g）を一括取得
  */
-export async function fetchContest(contest) {
+export async function fetchContest(contest: string): Promise<ContestFetchResults> {
   const problems = ["a", "b", "c", "d", "e", "f", "g"];
   console.log(`[Fetch] ${contest} のテストケースを取得中...`);
 
-  const results = {};
+  const results: ContestFetchResults = {};
   for (const p of problems) {
     const res = await fetchProblem(contest, p);
     results[p] = res;
@@ -151,9 +161,9 @@ export async function fetchContest(contest) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error("使い方: npm run fetch <コンテスト名> [問題名]");
-    console.error("例: npm run fetch abc350");
-    console.error("例: npm run fetch abc350 a");
+    console.error("使い方: bun run fetch <コンテスト名> [問題名]");
+    console.error("例: bun run fetch abc350");
+    console.error("例: bun run fetch abc350 a");
     process.exit(1);
   }
 

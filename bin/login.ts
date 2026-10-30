@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +25,7 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
-rl.question("REVEL_SESSION の値を貼り付けて Enter を押してください: ", async (ans) => {
+rl.question("REVEL_SESSION の値を貼り付けて Enter を押してください: ", async (ans: string) => {
   rl.close();
   const rawValue = ans.trim();
 
@@ -53,7 +53,7 @@ rl.question("REVEL_SESSION の値を貼り付けて Enter を押してくださ�
     } else {
       console.log("⚠️ 注意: ログインページにリダイレクトされました。値が正しいかご確認ください。");
     }
-  } catch (err) {
+  } catch (err: any) {
     console.log(`⚠️ 接続テストをスキップしました: ${err.message}`);
   }
 });

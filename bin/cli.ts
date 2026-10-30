@@ -1,9 +1,9 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fetchContest } from "./fetch.js";
+import { fetchContest } from "./fetch.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +28,8 @@ const defaultTemplate = `#include <bits/stdc++.h>
 #define ll long long
 using namespace std;
 
+// https://github.com/Aoki-3DPr/Atc
+
 ll di[8] = {1, 0, -1, 0, 1, 1, -1, -1};
 ll dj[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 
@@ -46,8 +48,8 @@ fs.mkdirSync(contestDir, { recursive: true });
 
 // a.cpp ~ g.cpp を作成
 const problems = ["a", "b", "c", "d", "e", "f", "g"];
-const created = [];
-const skipped = [];
+const created: string[] = [];
+const skipped: string[] = [];
 
 for (const p of problems) {
   const fileName = `${p}.cpp`;
@@ -87,6 +89,6 @@ if (fs.existsSync(cmakeListsPath)) {
 console.log();
 try {
   await fetchContest(folderName);
-} catch (err) {
+} catch (err: any) {
   console.log(`(テストケースの取得をスキップしました: ${err.message})`);
 }

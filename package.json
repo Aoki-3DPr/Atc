@@ -3,17 +3,20 @@
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "contests": "./bin/cli.js",
-    "bundle": "./bin/bundle.js",
-    "test": "./bin/test.js",
-    "fetch": "./bin/fetch.js",
-    "login": "./bin/login.js"
+    "contests": "./bin/cli.ts",
+    "bundle": "./bin/bundle.ts",
+    "test": "./bin/test.ts",
+    "fetch": "./bin/fetch.ts",
+    "login": "./bin/login.ts"
   },
   "scripts": {
-    "contests": "node ./bin/cli.js",
-    "bundle": "node ./bin/bundle.js",
-    "test": "node ./bin/test.js",
-    "fetch": "node ./bin/fetch.js",
-    "login": "node ./bin/login.js"
+    "contests": "bun ./bin/cli.ts",
+    "bundle": "bun ./bin/bundle.ts",
+    "test": "bun ./bin/test.ts",
+    "fetch": "bun ./bin/fetch.ts",
+    "login": "bun ./bin/login.ts",
+    "c": "bun ./bin/cli.ts",
+    "b": "bun ./bin/bundle.ts",
+    "t": "bun ./bin/test.ts"
   }
 }
