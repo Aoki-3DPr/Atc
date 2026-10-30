@@ -37,6 +37,10 @@ export function getDefaultProblems(name: string, platform = "atcoder"): string[]
   if (/^ahc/i.test(lower)) {
     return ["a"];
   }
+  if (/^(adt|daily)/i.test(lower)) {
+    // ADT (AtCoder Daily Training) は Easy/Med/Hard (5問) 〜 All (8〜10問)
+    return ["a", "b", "c", "d", "e", "f", "g", "h"];
+  }
   if (/^(arc|agc)/i.test(lower)) {
     return ["a", "b", "c", "d", "e", "f"];
   }
@@ -157,7 +161,21 @@ export async function fetchAtCoderProblem(
   const prob = problem.toLowerCase();
   const contestLower = contest.toLowerCase();
   const saveFolder = (destFolder || contestLower).toLowerCase();
-  const url = taskUrl || `https://atcoder.jp/contests/${contestLower}/tasks/${contestLower}_${prob}`;
+
+  let url = taskUrl;
+  if (!url) {
+    // ADT コンテスト（adt_all_..., adt_easy_... など）の場合は問題URLが元問題のIDになっているためタスク一覧から特定
+    if (/^adt/i.test(contestLower)) {
+      const taskList = await getAtCoderTaskList(contestLower);
+      const matched = taskList?.find((t) => t.label === prob);
+      if (matched) {
+        url = matched.url;
+      }
+    }
+    if (!url) {
+      url = `https://atcoder.jp/contests/${contestLower}/tasks/${contestLower}_${prob}`;
+    }
+  }
 
   const headers: Record<string, string> = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AtCoder-Tool/1.0",
@@ -175,6 +193,14 @@ export async function fetchAtCoderProblem(
   }
 
   if (res.status === 404) {
+    // 404 の場合、タスク一覧からURLを再検索してリトライ試行（特殊な問題URLやADT等のフォールバック）
+    if (!taskUrl) {
+      const taskList = await getAtCoderTaskList(contestLower);
+      const matched = taskList?.find((t) => t.label === prob);
+      if (matched && matched.url !== url) {
+        return fetchAtCoderProblem(contest, problem, destFolder, matched.url);
+      }
+    }
     return { success: false, error: "問題が見つかりません (404)" };
   }
   if (res.status === 403 || res.status === 302 || res.url.includes("/login")) {
