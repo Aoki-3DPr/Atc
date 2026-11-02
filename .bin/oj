@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+curr="$PWD"
+OJ_SCRIPT=""
+while [ -n "$curr" ] && [ "$curr" != "/" ]; do
+  if [ -f "$curr/bin/oj.ts" ]; then
+    OJ_SCRIPT="$curr/bin/oj.ts"
+    break
+  fi
+  curr="$(dirname "$curr")"
+done
+if [ -z "$OJ_SCRIPT" ]; then
+  echo "✗ エラー: 'oj' コマンドはこのプロジェクトのディレクトリ内でのみ実行可能です。" >&2
+  exit 1
+fi
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$OJ_SCRIPT" "$@"
+elif [ -x "$HOME/.bun/bin/bun" ]; then
+  exec "$HOME/.bun/bin/bun" "$OJ_SCRIPT" "$@"
+elif [ -x "/usr/local/bin/bun" ]; then
+  exec "/usr/local/bin/bun" "$OJ_SCRIPT" "$@"
+else
+  echo "[oj] Error: bun runtime not found." >&2
+  exit 1
+fi

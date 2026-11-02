@@ -58,6 +58,12 @@ export function decodeHtml(html: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&le;/g, "≤")
+    .replace(/&ge;/g, "≥")
+    .replace(/&times;/g, "×")
+    .replace(/&plusmn;/g, "±")
+    .replace(/&ne;/g, "≠")
+    .replace(/&hellip;/g, "…")
     .replace(/\r\n/g, "\n");
 }
 
@@ -105,6 +111,56 @@ export function getCodeforcesSessionCookie(): string | null {
 }
 
 /**
+ * 指定ミリ秒待機するスリープ関数
+ */
+export const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 429 (Too Many Requests) や一時的通信エラー時に自動リトライを行う fetch ラッパー
+ */
+export async function fetchWithRetry(
+  url: string,
+  options?: RequestInit,
+  maxRetries = 2
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 && attempt < maxRetries) {
+        attempt++;
+        const retryAfter = res.headers.get("Retry-After");
+        let waitMs = 2500 * Math.pow(2, attempt - 1); // 1回目: 2.5秒, 2回目: 5.0秒
+        if (retryAfter) {
+          const parsed = parseInt(retryAfter, 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            waitMs = Math.max(waitMs, parsed * 1000);
+          }
+        }
+        console.warn(
+          `  [HTTP 429] レート制限を検知しました。${(waitMs / 1000).toFixed(1)}秒待機して再試行します... (試行 ${attempt}/${maxRetries})`
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      return res;
+    } catch (err: any) {
+      if (attempt < maxRetries) {
+        attempt++;
+        const waitMs = 2000 * attempt;
+        console.warn(
+          `  [通信エラー] ${err.message}。${(waitMs / 1000).toFixed(1)}秒待機して再試行します... (試行 ${attempt}/${maxRetries})`
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+/**
  * AtCoder: コンテストのタスク一覧ページから問題一覧を自動取得
  */
 export async function getAtCoderTaskList(contest: string): Promise<AtCoderTaskInfo[] | null> {
@@ -121,7 +177,7 @@ export async function getAtCoderTaskList(contest: string): Promise<AtCoderTaskIn
 
   let res: Response;
   try {
-    res = await fetch(url, { headers });
+    res = await fetchWithRetry(url, { headers });
   } catch {
     return null;
   }
@@ -201,7 +257,7 @@ export async function fetchAtCoderProblem(
 
   let res: Response;
   try {
-    res = await fetch(url, { headers });
+    res = await fetchWithRetry(url, { headers });
   } catch (err: any) {
     return { success: false, error: `通信エラー: ${err.message}` };
   }
@@ -258,7 +314,8 @@ export async function fetchAtCoderProblem(
   }
 
   // 4. 保存先ディレクトリの準備（AtCoder配下）
-  const testDir = path.join(projectRoot, "AtCoder", saveFolder, "test", prob);
+  const contestDir = path.join(projectRoot, "AtCoder", saveFolder);
+  const testDir = path.join(contestDir, "test", prob);
   fs.mkdirSync(testDir, { recursive: true });
 
   // 既存ケースを一旦クリア（使い回し時の混入防止・随時完全上書き）
@@ -315,7 +372,7 @@ export async function fetchCodeforcesProblem(
 
   let res: Response;
   try {
-    res = await fetch(url, { headers });
+    res = await fetchWithRetry(url, { headers });
   } catch (err: any) {
     return { success: false, error: `通信エラー: ${err.message}` };
   }
@@ -355,7 +412,8 @@ export async function fetchCodeforcesProblem(
     return { success: false, error: "テストケースが見つかりませんでした" };
   }
 
-  const testDir = path.join(projectRoot, "Codeforces", saveFolder, "test", prob.toLowerCase());
+  const contestDir = path.join(projectRoot, "Codeforces", saveFolder);
+  const testDir = path.join(contestDir, "test", prob.toLowerCase());
   fs.mkdirSync(testDir, { recursive: true });
   cleanTestDir(testDir);
 
@@ -416,7 +474,13 @@ export async function fetchContest(
   if (plat === "atcoder" && (!problems || problems.length === 0)) {
     const taskList = await getAtCoderTaskList(contest);
     if (taskList && taskList.length > 0) {
-      for (const t of taskList) {
+      for (let i = 0; i < taskList.length; i++) {
+        const t = taskList[i];
+        if (i > 0) {
+          // 各問題の取得間に 800ms 〜 1.5秒 のウェイトを挟む（サーバー負荷・レート制限対策）
+          const delay = Math.floor(800 + Math.random() * 700);
+          await sleep(delay);
+        }
         const res = await fetchAtCoderProblem(contest, t.label, destFolder, t.url);
         results[t.label] = res;
         if (res.success) {
@@ -435,7 +499,13 @@ export async function fetchContest(
       ? problems
       : getDefaultProblems(contest, platform);
 
-  for (const p of probList) {
+  for (let i = 0; i < probList.length; i++) {
+    const p = probList[i];
+    if (i > 0) {
+      // 各問題の取得間に 800ms 〜 1.5秒 のウェイトを挟む
+      const delay = Math.floor(800 + Math.random() * 700);
+      await sleep(delay);
+    }
     const res = await fetchProblem(contest, p, platform, destFolder);
     results[p] = res;
     if (res.success) {
