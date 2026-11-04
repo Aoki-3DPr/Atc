@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { setupWslHybridEnv } from "./wsl_bridge.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,6 +271,9 @@ ${MARKER_END}`;
       }
     }
   }
+
+  // 4. WSL2 / Linux 2層ハイブリッド環境 (永続 $HOME/.cache/oj-cp ⇄ 超高速 /dev/shm) の自動構築
+  setupWslHybridEnv(remove);
 
   console.log(`${c.bold}${c.cyan}================================================================${c.reset}`);
   if (remove) {

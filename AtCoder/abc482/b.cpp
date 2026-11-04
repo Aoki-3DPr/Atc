@@ -13,6 +13,7 @@ ll solve() {
 		string a; cin >> a;
 		s[i] = a;
 	}
+	
 	ll ans = 5;
 	for (ll i = 0; i < 5; i++) {
 		ll count1 = 0;

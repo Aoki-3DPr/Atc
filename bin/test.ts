@@ -6,6 +6,7 @@ import os from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fetchProblem } from "./fetch.ts";
+import { runTestViaWslHybrid, type WslCaseInput } from "./wsl_bridge.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,11 +125,105 @@ if (fs.existsSync(infoPath)) {
   } catch {}
 }
 
-// 3. CMake での自動コンパイル
+// テストケース一覧の事前取得
+const testFiles = fs
+  .readdirSync(testDir)
+  .filter((f) => /^in\d+\.txt$/.test(f))
+  .sort((a, b) => {
+    const numA = parseInt(a.replace(/\D/g, ""), 10);
+    const numB = parseInt(b.replace(/\D/g, ""), 10);
+    return numA - numB;
+  });
+
+// 2.5. WSL2 / Linux 2層ハイブリッド高速エンジン ($HOME/.cache/oj-cp ⇄ /dev/shm) を優先試行
+const wslCases: WslCaseInput[] = testFiles.map((inFileName, idx) => {
+  const caseNum = idx + 1;
+  const inFile = path.join(testDir, inFileName);
+  const outFile = path.join(testDir, `out${caseNum}.txt`);
+  return {
+    caseNum,
+    input: fs.readFileSync(inFile, "utf8"),
+    expected: fs.existsSync(outFile) ? fs.readFileSync(outFile, "utf8") : "",
+  };
+});
+
+const wslSummary = !rawArgs.includes("--no-wsl")
+  ? runTestViaWslHybrid(targetName, srcFile, timeLimitMs, wslCases)
+  : null;
+
+if (wslSummary) {
+  if (wslSummary.mountedFromHomeCache) {
+    console.log(
+      `${c.cyan}[WSL Hybrid]${c.reset} 永続マスター (${c.bold}$HOME/.cache/oj-cp${c.reset}) から RAMディスク (${c.bold}/dev/shm${c.reset}) へ即時展開しました`
+    );
+  }
+  if (wslSummary.syncedLibCount > 0) {
+    console.log(`${c.cyan}[Delta Sync]${c.reset} lib/ の変更差分 ${wslSummary.syncedLibCount} 件を WSL へ同期しました`);
+  }
+  if (wslSummary.buildError) {
+    console.error(`${c.red}✗ ビルドエラー (WSL /dev/shm):${c.reset}`);
+    console.error(wslSummary.buildError);
+    process.exit(1);
+  }
+  if (wslSummary.needsBuild) {
+    console.log(
+      `${c.green}✓ ビルド成功 [WSL /dev/shm + PCH]${c.reset} ${c.gray}(コンパイル時間: ${wslSummary.buildDurationMs} ms)${c.reset}\n`
+    );
+  } else {
+    console.log(`${c.green}✓ ソースコード変更なし [WSL /dev/shm]（ビルドスキップ: 0 ms）${c.reset}\n`);
+  }
+
+  console.log(`${c.bold}==================================================${c.reset}`);
+  console.log(`問題: ${c.cyan}[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
+  console.log(`${c.bold}==================================================${c.reset}\n`);
+
+  let passedCount = 0;
+  let maxTimeMs = 0;
+
+  for (const res of wslSummary.results) {
+    if (res.elapsedMs > maxTimeMs) maxTimeMs = res.elapsedMs;
+    const timeStr = `${Math.round(res.elapsedMs)} ms`;
+
+    if (res.status === "AC") {
+      passedCount++;
+      console.log(`Case ${res.caseNum}: ${c.bgGreen} AC ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
+    } else if (res.status === "WA") {
+      console.log(`Case ${res.caseNum}: ${c.bgRed} WA ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
+      console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}`);
+      console.log(`${c.green}--- [期待される出力] ---${c.reset}\n${res.expected.trim()}`);
+      console.log(`${c.red}--- [あなたの出力] ---${c.reset}\n${res.actual.trim() || "(出力なし)"}\n`);
+    } else if (res.status === "TLE") {
+      console.log(`Case ${res.caseNum}: ${c.yellow}${c.bold} TLE ${c.reset} ${c.gray}(>${timeLimitMs} ms)${c.reset}`);
+      console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}\n`);
+    } else if (res.status === "RE") {
+      console.log(`Case ${res.caseNum}: ${c.magenta}${c.bold} RE (終了コード: ${res.exitCode}) ${c.reset}`);
+      if (res.stderr) console.log(`${c.red}${res.stderr.trim()}${c.reset}`);
+      console.log();
+    }
+  }
+
+  const buildSummaryStr = wslSummary.needsBuild
+    ? `コンパイル: ${wslSummary.buildDurationMs} ms / `
+    : "コンパイル: 0 ms (スキップ) / ";
+  console.log(`${c.bold}==================================================${c.reset}`);
+  if (passedCount === testFiles.length) {
+    console.log(
+      `${c.green}${c.bold}🎉 ALL SAMPLES PASSED!${c.reset} (${passedCount}/${testFiles.length} ケース合格 / ${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
+    );
+  } else {
+    console.log(
+      `${c.red}${c.bold}⚠️ RESULT:${c.reset} ${passedCount}/${testFiles.length} ケース合格 (${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
+    );
+  }
+  console.log(`${c.bold}==================================================${c.reset}`);
+  process.exit(0);
+}
+
+// 3. CMake での自動コンパイル (WSL が無い環境向けのフォールバック)
 const isLinux = process.platform === "linux";
 const useShm = isLinux && fs.existsSync("/dev/shm");
 const buildDir = useShm
-  ? "/dev/shm/APG4b-build"
+  ? "/dev/shm/CompetitiveProgramming-build"
   : path.join(projectRoot, isLinux ? "cmake-build-debug-wsl" : "cmake-build-debug-mingw");
 
 const exePath = path.join(
@@ -288,16 +383,7 @@ if (!isLinux) {
   } catch {}
 }
 
-// 4. テストケースの読み込みとソート
-const testFiles = fs
-  .readdirSync(testDir)
-  .filter((f) => /^in\d+\.txt$/.test(f))
-  .sort((a, b) => {
-    const numA = parseInt(a.replace(/\D/g, ""), 10);
-    const numB = parseInt(b.replace(/\D/g, ""), 10);
-    return numA - numB;
-  });
-
+// 4. テスト実行（フォールバック時）
 console.log(`${c.bold}==================================================${c.reset}`);
 console.log(`問題: ${c.cyan}[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
 console.log(`${c.bold}==================================================${c.reset}\n`);

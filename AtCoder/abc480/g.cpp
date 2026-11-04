@@ -17,7 +17,7 @@ ll solve() {
 	}
 	vector<ll> dp(n + 1, LONG_LONG_MAX);
 	stack<ll> mi, ma;
-	LazySegment seg(n + 1, [](ll a, ll b){ return min(a, b); }, INT_MAX);
+	LazySegmentTree seg(n + 1, [](ll a, ll b){ return min(a, b); }, INT_MAX);
 	dp[0] = 0;
 	seg.set(0, 0);
 	for (ll i = 1; i < n + 1; i++) {

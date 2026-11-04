@@ -13,6 +13,7 @@ node_modules/
 .atcoder_session
 .codeforces_session
 .oj_state.json
+.oj_wsl_sync.json
 
 # Bundled submission files
 *_bundled.cpp

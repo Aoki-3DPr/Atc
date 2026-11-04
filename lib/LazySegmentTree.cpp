@@ -4,7 +4,7 @@
 #define ll long long
 using namespace std;
 
-class LazySegment {
+class LazySegmentTree {
 private:
 	ll size;
 	ll identity;
@@ -47,7 +47,7 @@ private:
 	}
 
 public:
-	LazySegment(ll n, function<ll(ll a, ll b)> func, ll identity) :
+	LazySegmentTree(ll n, function<ll(ll a, ll b)> func, ll identity) :
 	size(bit_ceil(static_cast<unsigned int>(n))), f(std::move(func)), identity(identity) {
 		tree.resize(size * 2, identity);
 		subtree.resize(size * 2, {1, 0});
@@ -96,7 +96,7 @@ int main() {
 	ios::sync_with_stdio(false);
 	cin.tie(nullptr);
 	ll n = 1000000;
-	LazySegment s(n, [](ll a, ll b) { return a + b; }, 0);
+	LazySegmentTree s(n, [](ll a, ll b) { return a + b; }, 0);
 	for (ll i = 0; i < n; i++) {
 		s.set(i, i);
 	}
