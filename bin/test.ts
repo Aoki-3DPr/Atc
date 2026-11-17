@@ -7,6 +7,9 @@ import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fetchProblem } from "./fetch.ts";
 import { runTestViaWslHybrid, type WslCaseInput } from "./wsl_bridge.ts";
+import { installWindowsNewlineFix, getTermWidth, hr } from "./tty_fix.ts";
+
+installWindowsNewlineFix();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,6 +89,85 @@ else {
   }
 }
 
+
+
+interface CommonCaseResult {
+  caseNum: number;
+  status: string;
+  elapsedMs: number;
+  input: string;
+  expected: string;
+  actual: string;
+  stderr?: string;
+  exitCode?: number;
+}
+
+function printFormattedResults(
+  platform: string,
+  contest: string,
+  prob: string,
+  timeLimitMs: number,
+  results: CommonCaseResult[],
+  buildStr: string,
+  preRunTotalMs?: number
+): void {
+  const width = getTermWidth();
+  const sep = hr("-");
+
+  console.log(`\x1b[90m${sep}\x1b[0m`);
+  console.log(`\x1b[1m[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]\x1b[0m \x1b[90m(Limit: ${timeLimitMs} ms)\x1b[0m`);
+  console.log(`\x1b[90m${sep}\x1b[0m`);
+
+  let passed = 0;
+  let maxTime = 0;
+
+  for (const r of results) {
+    if (r.elapsedMs > maxTime) maxTime = r.elapsedMs;
+    const timeMs = Math.round(r.elapsedMs);
+    const timeStr = `${timeMs} ms`.padStart(7, " ");
+    const caseLabel = `Case #${String(r.caseNum).padStart(2, " ")}`;
+
+    if (r.status === "AC") {
+      passed++;
+      console.log(`  ${caseLabel} : \x1b[32m[AC]\x1b[0m  \x1b[90m${timeStr}\x1b[0m`);
+    } else if (r.status === "WA") {
+      console.log(`  ${caseLabel} : \x1b[31m[WA]\x1b[0m  \x1b[90m${timeStr}\x1b[0m`);
+      const indent = (s: string) => s.trim().split(/\r?\n/).map(l => `      ${l}`).join("\n");
+      console.log(`    \x1b[90m--- [Input] ---\x1b[0m\n${indent(r.input)}`);
+      console.log(`    \x1b[32m--- [Expected] ---\x1b[0m\n${indent(r.expected)}`);
+      console.log(`    \x1b[31m--- [Your Output] ---\x1b[0m\n${indent(r.actual || "(no output)")}\n`);
+    } else if (r.status === "TLE") {
+      console.log(`  ${caseLabel} : \x1b[33m[TLE]\x1b[0m \x1b[90m(>${timeLimitMs} ms)\x1b[0m`);
+      const indent = (s: string) => s.trim().split(/\r?\n/).map(l => `      ${l}`).join("\n");
+      console.log(`    \x1b[90m--- [Input] ---\x1b[0m\n${indent(r.input)}\n`);
+    } else if (r.status === "RE") {
+      console.log(`  ${caseLabel} : \x1b[35m[RE]\x1b[0m  \x1b[90m(exit: ${r.exitCode ?? "?"})\x1b[0m`);
+      if (r.stderr) {
+        const indent = (s: string) => s.trim().split(/\r?\n/).map(l => `      ${l}`).join("\n");
+        console.log(`${indent(r.stderr)}\n`);
+      }
+    }
+  }
+
+  console.log(`\n\x1b[90m${sep}\x1b[0m`);
+  const total = results.length;
+  const allPassed = passed === total;
+  const resultTag = allPassed ? `\x1b[32m[ALL PASSED]\x1b[0m` : `\x1b[31m[FAILED]\x1b[0m`;
+  const resultPlainTag = allPassed ? "[ALL PASSED]" : "[FAILED]";
+  const summaryCore = `${passed}/${total} cases passed`;
+  const totalPart = preRunTotalMs !== undefined ? ` | Pre-Run Total: ${Math.round(preRunTotalMs)} ms` : "";
+  const extraStr = `Build: ${buildStr}${totalPart} | Max Time: ${Math.round(maxTime)} ms`;
+  const singleLinePlain = `  ${resultPlainTag} ${summaryCore} (${extraStr})`;
+
+  if (width >= 70 && singleLinePlain.length < width) {
+    console.log(`  ${resultTag} ${summaryCore} (${extraStr})`);
+  } else {
+    console.log(`  ${resultTag} ${summaryCore}`);
+    console.log(`  \x1b[90m${extraStr}\x1b[0m`);
+  }
+  console.log(`\x1b[90m${sep}\x1b[0m`);
+}
+
 const targetName = `${platform}_${contest}_${prob}`;
 const contestDir = path.join(projectRoot, platform, contest);
 const srcFile = path.join(contestDir, `${prob}.cpp`);
@@ -97,7 +179,7 @@ if (!fs.existsSync(srcFile)) {
 }
 
 // 1. テストケースの存在確認＆自動取得
-if (!fs.existsSync(testDir) || fs.readdirSync(testDir).filter((f) => f.startsWith("in")).length === 0) {
+if (!fs.existsSync(testDir) || fs.readdirSync(testDir).filter((f) => /^in\d+\.txt$/.test(f)).length === 0) {
   const isGeneric = /^(abc|arc|agc|ahc|adt|daily|cf|codeforces)$/i.test(contest);
   if (isGeneric) {
     console.error(`${c.red}エラー: テストケースが見つかりません。${c.reset}`);
@@ -115,7 +197,8 @@ if (!fs.existsSync(testDir) || fs.readdirSync(testDir).filter((f) => f.startsWit
   console.log(`✓ サンプルケース ${fetchRes.count} 件を取得しました。\n`);
 }
 
-// 2. 制限時間の読み込み (info.json)
+// 2. 制限時間の読み込み (info.json) 〜 コンパイル・実行完了までの全体計測開始
+const execTotalStart = performance.now();
 let timeLimitMs = 2000;
 const infoPath = path.join(testDir, "info.json");
 if (fs.existsSync(infoPath)) {
@@ -173,49 +256,30 @@ if (wslSummary) {
     console.log(`${c.green}✓ ソースコード変更なし [WSL /dev/shm]（ビルドスキップ: 0 ms）${c.reset}\n`);
   }
 
-  console.log(`${c.bold}==================================================${c.reset}`);
-  console.log(`問題: ${c.cyan}[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
-  console.log(`${c.bold}==================================================${c.reset}\n`);
+  const buildStr = wslSummary.needsBuild
+    ? `${wslSummary.buildDurationMs} ms`
+    : "0 ms (cache)";
 
-  let passedCount = 0;
-  let maxTimeMs = 0;
+  const formattedResults: CommonCaseResult[] = wslSummary.results.map((r) => ({
+    caseNum: r.caseNum,
+    status: r.status,
+    elapsedMs: r.elapsedMs,
+    input: r.input,
+    expected: r.expected,
+    actual: r.actual,
+    stderr: r.stderr,
+    exitCode: r.exitCode,
+  }));
 
-  for (const res of wslSummary.results) {
-    if (res.elapsedMs > maxTimeMs) maxTimeMs = res.elapsedMs;
-    const timeStr = `${Math.round(res.elapsedMs)} ms`;
-
-    if (res.status === "AC") {
-      passedCount++;
-      console.log(`Case ${res.caseNum}: ${c.bgGreen} AC ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
-    } else if (res.status === "WA") {
-      console.log(`Case ${res.caseNum}: ${c.bgRed} WA ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
-      console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}`);
-      console.log(`${c.green}--- [期待される出力] ---${c.reset}\n${res.expected.trim()}`);
-      console.log(`${c.red}--- [あなたの出力] ---${c.reset}\n${res.actual.trim() || "(出力なし)"}\n`);
-    } else if (res.status === "TLE") {
-      console.log(`Case ${res.caseNum}: ${c.yellow}${c.bold} TLE ${c.reset} ${c.gray}(>${timeLimitMs} ms)${c.reset}`);
-      console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}\n`);
-    } else if (res.status === "RE") {
-      console.log(`Case ${res.caseNum}: ${c.magenta}${c.bold} RE (終了コード: ${res.exitCode}) ${c.reset}`);
-      if (res.stderr) console.log(`${c.red}${res.stderr.trim()}${c.reset}`);
-      console.log();
-    }
-  }
-
-  const buildSummaryStr = wslSummary.needsBuild
-    ? `コンパイル: ${wslSummary.buildDurationMs} ms / `
-    : "コンパイル: 0 ms (スキップ) / ";
-  console.log(`${c.bold}==================================================${c.reset}`);
-  if (passedCount === testFiles.length) {
-    console.log(
-      `${c.green}${c.bold}🎉 ALL SAMPLES PASSED!${c.reset} (${passedCount}/${testFiles.length} ケース合格 / ${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
-    );
-  } else {
-    console.log(
-      `${c.red}${c.bold}⚠️ RESULT:${c.reset} ${passedCount}/${testFiles.length} ケース合格 (${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
-    );
-  }
-  console.log(`${c.bold}==================================================${c.reset}`);
+  printFormattedResults(
+    platform,
+    contest,
+    prob,
+    timeLimitMs,
+    formattedResults,
+    buildStr,
+    wslSummary.preRunTotalMs ?? (performance.now() - execTotalStart)
+  );
   process.exit(0);
 }
 
@@ -384,9 +448,6 @@ if (!isLinux) {
 }
 
 // 4. テスト実行（フォールバック時）
-console.log(`${c.bold}==================================================${c.reset}`);
-console.log(`問題: ${c.cyan}[${platform}] ${contest.toUpperCase()} [${prob.toUpperCase()}]${c.reset}  (制限時間: ${timeLimitMs} ms)`);
-console.log(`${c.bold}==================================================${c.reset}\n`);
 
 interface TestResult {
   status: "AC" | "WA" | "TLE" | "RE";
@@ -500,8 +561,8 @@ function runSingleTest(inFile: string, outFile: string, testNum: number): Promis
 }
 
 // 5. テスト実行ループ（1ケースずつ順次実行してプロセス競合を回避）
-let passedCount = 0;
-let maxTimeMs = 0;
+const preRunTotalMs = performance.now() - execTotalStart;
+const fallbackResults: CommonCaseResult[] = [];
 
 for (let i = 0; i < testFiles.length; i++) {
   const inFile = path.join(testDir, testFiles[i]);
@@ -509,38 +570,18 @@ for (let i = 0; i < testFiles.length; i++) {
   const caseNum = i + 1;
 
   const res = await runSingleTest(inFile, outFile, caseNum);
-  if (res.elapsedMs > maxTimeMs) maxTimeMs = res.elapsedMs;
-
-  const timeStr = `${Math.round(res.elapsedMs)} ms`;
-
-  if (res.status === "AC") {
-    passedCount++;
-    console.log(`Case ${caseNum}: ${c.bgGreen} AC ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
-  } else if (res.status === "WA") {
-    console.log(`Case ${caseNum}: ${c.bgRed} WA ${c.reset} ${c.gray}(${timeStr})${c.reset}`);
-    console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}`);
-    console.log(`${c.green}--- [期待される出力] ---${c.reset}\n${res.expected.trim()}`);
-    console.log(`${c.red}--- [あなたの出力] ---${c.reset}\n${res.actual.trim() || "(出力なし)"}\n`);
-  } else if (res.status === "TLE") {
-    console.log(`Case ${caseNum}: ${c.yellow}${c.bold} TLE ${c.reset} ${c.gray}(>${timeLimitMs} ms)${c.reset}`);
-    console.log(`${c.gray}--- [入力] ---${c.reset}\n${res.input.trim()}\n`);
-  } else if (res.status === "RE") {
-    console.log(`Case ${caseNum}: ${c.magenta}${c.bold} RE (終了コード: ${res.code}) ${c.reset}`);
-    if (res.stderr) console.log(`${c.red}${res.stderr.trim()}${c.reset}`);
-    console.log();
-  }
+  fallbackResults.push({
+    caseNum,
+    status: res.status,
+    elapsedMs: res.elapsedMs,
+    input: res.input,
+    expected: res.expected,
+    actual: res.actual,
+    stderr: res.stderr,
+    exitCode: res.code ?? undefined,
+  });
 }
 
 // 6. サマリー表示
-const buildSummaryStr = needsBuild ? `コンパイル: ${buildDurationMs} ms / ` : "コンパイル: 0 ms (スキップ) / ";
-console.log(`${c.bold}==================================================${c.reset}`);
-if (passedCount === testFiles.length) {
-  console.log(
-    `${c.green}${c.bold}🎉 ALL SAMPLES PASSED!${c.reset} (${passedCount}/${testFiles.length} ケース合格 / ${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
-  );
-} else {
-  console.log(
-    `${c.red}${c.bold}⚠️ RESULT:${c.reset} ${passedCount}/${testFiles.length} ケース合格 (${buildSummaryStr}最大実行時間: ${Math.round(maxTimeMs)} ms)`
-  );
-}
-console.log(`${c.bold}==================================================${c.reset}`);
+const buildStr = needsBuild ? `${buildDurationMs} ms` : "0 ms (cache)";
+printFormattedResults(platform, contest, prob, timeLimitMs, fallbackResults, buildStr, preRunTotalMs);

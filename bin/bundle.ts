@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { installWindowsNewlineFix, hr } from "./tty_fix.ts";
+
+installWindowsNewlineFix();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -218,12 +221,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     copiedToClipboard = true;
   } catch {}
 
-  console.log("==================================================");
+  console.log(hr("="));
   console.log(`対象: ${path.relative(projectRoot, targetFilePath)}`);
   if (copiedToClipboard) {
     console.log("✅ クリップボードにコピーしました！ (AtCoder/Codeforces提出欄にそのまま Ctrl+V 可能)");
   } else {
     console.log("⚠️ クリップボードへの自動コピーはスキップされました。");
   }
-  console.log("==================================================");
+  console.log(hr("="));
 }

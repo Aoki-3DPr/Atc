@@ -8,11 +8,14 @@ ll di[8] = {1, 0, -1, 0, 1, 1, -1, -1};
 ll dj[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 
 ll solve() {
+	string s; cin >> s;
+	s += 's';
+	cout << s << endl;
 	return 0;
 }
 
 int main() {
 	solve();
-    return 0;
+	return 0;
 }
 

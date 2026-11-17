@@ -3,16 +3,29 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { installWindowsNewlineFix, getTermWidth, hr } from "./tty_fix.ts";
 import {
   fetchContest,
   fetchProblem,
   getDefaultProblems,
   getAtCoderTaskList,
+  getCodeforcesTaskList,
+  isProblemLabelArg,
 } from "./fetch.ts";
 import { bundle } from "./bundle.ts";
 import { runSetup } from "./setup.ts";
+import {
+  DEFAULT_PORT,
+  type ServerInstance,
+  startLocalRunnerServer,
+  stopLocalRunnerServer,
+  getLocalRunnerStatus,
+  attachLogMonitor,
+} from "./server.ts";
+
+installWindowsNewlineFix();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,9 +283,9 @@ async function handleSetupContest(
   }
 
   let contestId = cleanArgs[0].replace(/^(AtCoder|Codeforces|contests)[\\/]+/i, "");
-  let targetFolder = cleanArgs[1]
+  let targetFolder = (cleanArgs[1]
     ? cleanArgs[1].replace(/^(AtCoder|Codeforces|contests)[\\/]+/i, "")
-    : resolveDefaultFolder(platform, contestId, isNew);
+    : resolveDefaultFolder(platform, contestId, isNew)).toLowerCase();
 
   // もし "oj ac abc abc350" のように第1引数が純粋な使い回しフォルダ名で第2引数がコンテストIDの場合も自然に対応
   const isFirstPureGeneric = /^(abc|arc|agc|ahc|adt|daily|cf)$/i.test(contestId);
@@ -286,11 +299,18 @@ async function handleSetupContest(
   const isGenericOnly = /^(abc|arc|agc|ahc|adt|daily|cf)$/i.test(contestId);
 
   let problems = getDefaultProblems(contestId, platform);
-  if (platform === "AtCoder" && !isGenericOnly) {
+  if (!isGenericOnly) {
     try {
-      const taskList = await getAtCoderTaskList(contestId);
-      if (taskList && taskList.length > 0) {
-        problems = taskList.map((t) => t.label);
+      if (platform === "AtCoder") {
+        const taskList = await getAtCoderTaskList(contestId);
+        if (taskList && taskList.length > 0) {
+          problems = taskList.map((t) => t.label);
+        }
+      } else {
+        const cfTasks = await getCodeforcesTaskList(contestId);
+        if (cfTasks && cfTasks.length > 0) {
+          problems = cfTasks.map((t) => t.label);
+        }
       }
     } catch {}
   }
@@ -306,17 +326,17 @@ async function handleSetupContest(
   };
   saveState(state);
 
-  console.log(`${c.bold}${c.cyan}==================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
   console.log(`🎯 ターゲット設定: ${c.bold}${c.green}[${platform}] ${targetFolder}${c.reset} ${!isGenericOnly ? `(Contest: ${c.yellow}${contestId}${c.reset})` : ""}`);
   if (created.length > 0) {
     console.log(`📄 新規ファイル作成: ${created.join(", ")}`);
   }
-  console.log(`${c.bold}${c.cyan}==================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
 
   if (!isGenericOnly) {
     await fetchContest(contestId, platform.toLowerCase(), problems, targetFolder);
   } else {
-    console.log(`💡 フォルダ '${platform}/${targetFolder}' に切り替えました。`);
+    console.log(`フォルダ '${platform}/${targetFolder}' に切り替えました。`);
   }
 }
 
@@ -389,12 +409,12 @@ async function handleUse(args: string[]): Promise<void> {
     saveState(state);
 
     const label = state.folder === state.contest ? state.folder : `${state.contest} (${state.folder})`;
-    console.log(`${c.green}✓ 作業ターゲットを切り替えました:${c.reset} ${c.bold}[${state.platform}] ${label}${c.reset}`);
+    console.log(`${c.green}[OK] 作業ターゲットを切り替えました:${c.reset} ${c.bold}[${state.platform}] ${label}${c.reset}`);
     return;
   }
 
   // 4. フォルダが存在しない場合 -> handleSetupContest で新規作成＆取得へフォールバック
-  console.log(`${c.yellow}💡 フォルダ '${rawTarget}' がまだ無いため、新規セットアップを行います...${c.reset}`);
+  console.log(`${c.yellow}フォルダ '${rawTarget}' がまだ無いため、新規セットアップを行います...${c.reset}`);
   const plat = inferPlatformFromContest(rawTarget);
   await handleSetupContest(plat, args, false);
 }
@@ -402,7 +422,55 @@ async function handleUse(args: string[]): Promise<void> {
 /**
  * テスト実行 (oj t [prob])
  */
-function handleTest(args: string[]): void {
+
+/**
+ * 子プロセスを安全に実行し、Windows コンソールの raw モードや改行崩れ（階段現象）を防止してリアルタイム出力するヘルパー
+ */
+function runChildScriptAsync(scriptPath: string, args: string[]): Promise<void> {
+  const cols = process.stdout.columns || 60;
+  const env = { ...process.env, COLUMNS: String(cols) };
+
+  return new Promise((resolve) => {
+    const child = spawn("bun", [scriptPath, ...args], {
+      cwd: projectRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout?.on("data", (chunk) => process.stdout.write(chunk));
+    child.stderr?.on("data", (chunk) => process.stderr.write(chunk));
+    child.on("close", () => resolve());
+    child.on("error", (err) => {
+      console.error(`${c.red}子プロセス実行エラー: ${err.message}${c.reset}`);
+      resolve();
+    });
+  });
+}
+
+/**
+ * stdin / TTY 対話が必要な子プロセスを実行し、対話シェル中の raw モード干渉を防ぐヘルパー
+ */
+function runInteractiveChildSync(scriptPath: string, args: string[]): void {
+  const cols = process.stdout.columns || 60;
+  const env = { ...process.env, COLUMNS: String(cols) };
+  const canToggleRaw = isInteractiveShell && process.stdin.isTTY && typeof process.stdin.setRawMode === "function";
+
+  if (canToggleRaw) {
+    try { process.stdin.setRawMode(false); } catch {}
+  }
+  try {
+    spawnSync("bun", [scriptPath, ...args], {
+      cwd: projectRoot,
+      env,
+      stdio: "inherit",
+    });
+  } finally {
+    if (canToggleRaw) {
+      try { process.stdin.setRawMode(true); } catch {}
+    }
+  }
+}
+
+async function handleTest(args: string[]): Promise<void> {
   const state = loadState();
   let platform = state.platform;
   let folder = state.folder;
@@ -415,7 +483,7 @@ function handleTest(args: string[]): void {
     const arg = args[0];
     if (arg.includes("/") || arg.includes("\\") || arg.endsWith(".cpp")) {
       // パス直接指定
-      spawnSync("bun", [path.join(__dirname, "test.ts"), arg], { stdio: "inherit", cwd: projectRoot });
+      await runChildScriptAsync(path.join(__dirname, "test.ts"), [arg]);
       return;
     }
     prob = arg.toLowerCase();
@@ -438,16 +506,13 @@ function handleTest(args: string[]): void {
   state.lastProblem = prob;
   saveState(state);
 
-  spawnSync("bun", [path.join(__dirname, "test.ts"), platform.toLowerCase(), folder, prob], {
-    stdio: "inherit",
-    cwd: projectRoot,
-  });
+  await runChildScriptAsync(path.join(__dirname, "test.ts"), [platform.toLowerCase(), folder, prob]);
 }
 
 /**
  * バンドル＆クリップボードコピー (oj b [prob])
  */
-function handleBundle(args: string[]): void {
+async function handleBundle(args: string[]): Promise<void> {
   const state = loadState();
   let platform = state.platform;
   let folder = state.folder;
@@ -459,7 +524,7 @@ function handleBundle(args: string[]): void {
   } else if (args.length === 1) {
     const arg = args[0];
     if (arg.includes("/") || arg.includes("\\") || arg.endsWith(".cpp")) {
-      spawnSync("bun", [path.join(__dirname, "bundle.ts"), arg], { stdio: "inherit", cwd: projectRoot });
+      await runChildScriptAsync(path.join(__dirname, "bundle.ts"), [arg]);
       return;
     }
     prob = arg.toLowerCase();
@@ -476,10 +541,43 @@ function handleBundle(args: string[]): void {
   state.lastProblem = prob;
   saveState(state);
 
-  spawnSync("bun", [path.join(__dirname, "bundle.ts"), platform.toLowerCase(), folder, prob], {
-    stdio: "inherit",
-    cwd: projectRoot,
-  });
+  await runChildScriptAsync(path.join(__dirname, "bundle.ts"), [platform.toLowerCase(), folder, prob]);
+}
+
+/**
+ * ストレステスト実行 (oj s / oj stress [prob])
+ */
+function handleStress(args: string[]): void {
+  const state = loadState();
+  let platform = state.platform;
+  let folder = state.folder;
+  let prob = "";
+
+  if (args.length === 0) {
+    prob = detectLatestProblemInFolder(platform, folder, state.lastProblem);
+    console.log(`${c.cyan}🎯 自動選択:${c.reset} ${c.bold}${platform}/${folder}/${prob}.cpp${c.reset} ${c.gray}(直近保存ファイル)${c.reset}`);
+  } else if (args.length === 1) {
+    prob = args[0].toLowerCase();
+  } else if (args.length >= 2) {
+    if (["atcoder", "ac", "codeforces", "cf"].includes(args[0].toLowerCase())) {
+      platform = ["codeforces", "cf"].includes(args[0].toLowerCase()) ? "Codeforces" : "AtCoder";
+      folder = args[1].toLowerCase();
+      prob = (args[2] || detectLatestProblemInFolder(platform, folder)).toLowerCase();
+    } else {
+      folder = args[0].toLowerCase();
+      prob = args[1].toLowerCase();
+      if (fs.existsSync(path.join(projectRoot, "Codeforces", folder))) {
+        platform = "Codeforces";
+      } else {
+        platform = "AtCoder";
+      }
+    }
+  }
+
+  state.lastProblem = prob;
+  saveState(state);
+
+  runInteractiveChildSync(path.join(__dirname, "stress.ts"), [platform, folder, prob]);
 }
 
 /**
@@ -493,11 +591,11 @@ async function handleFetch(args: string[]): Promise<void> {
     return;
   }
 
-  if (args.length === 1 && /^[a-zA-Z]$/.test(args[0])) {
+  if (args.length === 1 && isProblemLabelArg(args[0])) {
     const prob = args[0].toLowerCase();
     const res = await fetchProblem(state.contest, prob, state.platform.toLowerCase(), state.folder);
     if (res.success) {
-      console.log(`✓ [${state.platform}] ${state.contest} [${prob.toUpperCase()}]: ${res.count} ケース取得完了 (${res.timeLimitMs}ms)`);
+      console.log(`[OK] [${state.platform}] ${state.contest} [${prob.toUpperCase()}]: ${res.count} ケース取得完了 (${res.timeLimitMs}ms)`);
     } else {
       console.error(`✗ エラー: ${res.error}`);
     }
@@ -505,10 +603,7 @@ async function handleFetch(args: string[]): Promise<void> {
   }
 
   // コンテスト名指定の場合
-  spawnSync("bun", [path.join(__dirname, "fetch.ts"), ...args], {
-    stdio: "inherit",
-    cwd: projectRoot,
-  });
+  await runChildScriptAsync(path.join(__dirname, "fetch.ts"), args);
 }
 
 /**
@@ -519,14 +614,14 @@ function handleStatus(): void {
   const folderPath = path.join(projectRoot, state.platform, state.folder);
   const latestProb = detectLatestProblemInFolder(state.platform, state.folder, state.lastProblem);
 
-  console.log(`\n${c.bold}${c.cyan}==================================================${c.reset}`);
-  console.log(`  ${c.bold}⚡ OJ Current Workspace Status${c.reset}`);
-  console.log(`${c.bold}${c.cyan}==================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
+  console.log(`  ${c.bold}OJ Current Workspace Status${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
   console.log(`  Platform     : ${c.bold}${c.green}${state.platform}${c.reset}`);
   console.log(`  Work Folder  : ${c.bold}${state.platform}/${state.folder}${c.reset}`);
   console.log(`  Contest ID   : ${c.bold}${c.yellow}${state.contest}${c.reset}`);
   console.log(`  Latest File  : ${c.bold}${c.cyan}${latestProb}.cpp${c.reset} ${c.gray}(oj t / oj b の省略時対象)${c.reset}`);
-  console.log(`--------------------------------------------------`);
+  console.log(`${hr("-")}`);
 
   if (fs.existsSync(folderPath)) {
     const cppFiles = fs
@@ -557,7 +652,7 @@ function handleStatus(): void {
       console.log(`  ${marker} ${c.bold}${prob.toUpperCase()}${c.reset} (${f}) : ${statusStr}`);
     }
   }
-  console.log(`${c.bold}${c.cyan}==================================================${c.reset}\n`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
 }
 
 /**
@@ -565,10 +660,9 @@ function handleStatus(): void {
  */
 function showHelp(): void {
   const state = loadState();
-  console.log(`
-${c.bold}${c.cyan}======================================================================${c.reset}
+  console.log(`${c.bold}${c.cyan}${hr('=')}${c.reset}
   ${c.bold}${c.green}oj - Online Judge CLI${c.reset}  ${c.gray}[Current: ${state.platform}/${state.folder} (${state.contest})]${c.reset}
-${c.bold}${c.cyan}======================================================================${c.reset}
+${c.bold}${c.cyan}${hr('=')}${c.reset}
 
 ${c.bold}${c.yellow}■ 1. サイト階層（コンテストのセット ＆ テストケース取得）${c.reset}
   ${c.cyan}oj ac <contest>${c.reset}        AtCoder をセット (自動で abc/arc/agc/ahc/adt に振り分け)
@@ -587,17 +681,124 @@ ${c.bold}${c.yellow}■ 2. 共通アクション階層（どのサイトでも�
   ${c.cyan}oj b [problem]${c.reset}         提出用バンドル＆クリップボードにコピー
       ${c.gray}例: oj b a           → カレントフォルダの a.cpp をバンドル＆コピー${c.reset}
       ${c.gray}例: oj b             → 直前に編集・保存した問題を自動バンドル＆コピー${c.reset}
+  ${c.cyan}oj s [problem]${c.reset}         ストレステスト＆検算 (oj stress [prob])
+      ${c.gray}例: oj s a           → a.cpp をチェッカー検証 (反例自動探索＆最小化)${c.reset}
+      ${c.gray}例: oj s             → 直前保存ファイルをストレステスト${c.reset}
   ${c.cyan}oj f [problem]${c.reset}         カレントコンテストのテストケースを再取得
   ${c.cyan}oj st${c.reset} (${c.cyan}oj status${c.reset})      現在のターゲット・各問題のケース状況を表示
 
 ${c.bold}${c.yellow}■ 3. 環境・認証・専用シェル階層${c.reset}
   ${c.cyan}oj sh${c.reset} (${c.cyan}oj${c.reset} 引数なし)    専用コマンドシェル (${c.green}oj >${c.reset}) を起動 (先頭の oj すら省略可能)
   ${c.cyan}oj setup${c.reset} (${c.cyan}bun setup${c.reset})   現在の環境・フォルダに合わせて自動パス認識を動的構築
+  ${c.cyan}oj server [start|stop|st]${c.reset} CP Toolkit 連携サーバーの起動/停止/状態確認 (既定: 3721)
+  ${c.cyan}oj stop${c.reset}                 稼働中の Local Runner サーバーを停止
   ${c.cyan}oj login [ac|cf]${c.reset}       AtCoder / Codeforces の Cookie 設定
   ${c.cyan}oj h${c.reset}  (${c.cyan}oj help${c.reset})        このヘルプを表示
-${c.bold}${c.cyan}======================================================================${c.reset}
-`);
+${c.bold}${c.cyan}${hr('=')}${c.reset}`);
 }
+
+let activeInteractiveServer: ServerInstance | null = null;
+let isInteractiveShell = false;
+
+async function stopActiveOrTargetServer(portArgRaw?: string): Promise<void> {
+  const parsed = parseInt(portArgRaw || "", 10);
+  const targetPort = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+
+  if (activeInteractiveServer && (!targetPort || activeInteractiveServer.port === targetPort)) {
+    const p = activeInteractiveServer.port;
+    const srv = activeInteractiveServer;
+    activeInteractiveServer = null;
+    await Promise.race([
+      Promise.resolve(srv.stop("interactive_stop")).catch(() => {}),
+      new Promise<void>((r) => setTimeout(r, 800)),
+    ]);
+    console.log(`${c.green}[OK]${c.reset} Local Runner サーバーを停止しました (ポート ${p} を解放)。`);
+    return;
+  }
+
+  const { stopped, port: stoppedPort } = await stopLocalRunnerServer(targetPort);
+  if (stopped) {
+    console.log(`${c.green}[OK]${c.reset} ポート ${stoppedPort} の Local Runner サーバーを停止しました。`);
+  } else {
+    console.log(`${c.gray}稼働中の Local Runner サーバーは見つかりませんでした。${c.reset}`);
+  }
+}
+
+/**
+ * フォアグラウンドでサーバーを実行し、q / Enter / Ctrl+C または oj stop で確実にコマンドラインへ復帰する
+ */
+async function runStandaloneServerLoop(serverInstance: ServerInstance): Promise<void> {
+  console.log(`\x1b[90m${hr('-')}\x1b[0m`);
+  console.log(`  \x1b[1mOJ Local Runner Server\x1b[0m (CP Toolkit)`);
+  console.log(`  Endpoint : \x1b[33mhttp://localhost:${serverInstance.port}/\x1b[0m`);
+  console.log(`  Setting  : CP Toolkit -> Local Runner URL: http://localhost:${serverInstance.port}/`);
+  console.log(`  Stop     : Press [q], [Enter], [Ctrl+C], or run 'oj stop' in another terminal`);
+  console.log(`\x1b[90m${hr('-')}\x1b[0m`);
+  console.log(`\x1b[90mWaiting for test requests...\x1b[0m\n`);
+
+  const wasRaw = Boolean((process.stdin as any).isRaw);
+
+  await new Promise<void>((resolve) => {
+    let cleaningUp = false;
+
+    const onData = (chunk: string | Buffer) => {
+      const str = String(chunk);
+      const trimmed = str.trim().toLowerCase();
+      if (trimmed === "q" || trimmed === "stop" || trimmed === "exit" || str === "\u0003" || str === "\r" || str === "\n") {
+        void cleanupAndResolve(str === "\u0003" ? "Ctrl+C" : "key press");
+      }
+    };
+
+    const onSig = () => {
+      void cleanupAndResolve("SIGINT");
+    };
+
+    const cleanupAndResolve = async (reason: string) => {
+      if (cleaningUp) return;
+      cleaningUp = true;
+
+      process.stdin.removeListener("data", onData);
+      process.removeListener("SIGINT", onSig);
+      process.removeListener("SIGTERM", onSig);
+
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        try { process.stdin.setRawMode(wasRaw); } catch {}
+      }
+      if (!isInteractiveShell) {
+        try { process.stdin.pause(); } catch {}
+      }
+
+      await Promise.race([
+        Promise.resolve(serverInstance.stop(reason)).catch(() => {}),
+        new Promise<void>((r) => setTimeout(r, 800)),
+      ]);
+
+      console.log(`\n\x1b[90m[STOP] Local Runner サーバーを停止しました (${reason})\x1b[0m`);
+      resolve();
+      if (!isInteractiveShell) {
+        process.exit(0);
+      }
+    };
+
+    // サーバーの停止イベント (oj stop 等のリモート停止) を検知
+    serverInstance.onStop = (reason: string) => {
+      void cleanupAndResolve(reason || "remote_stop");
+    };
+
+    process.once("SIGINT", onSig);
+    process.once("SIGTERM", onSig);
+
+    try {
+      if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+        process.stdin.setRawMode(true);
+      }
+      process.stdin.resume();
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", onData);
+    } catch {}
+  });
+}
+
 
 /**
  * 単一コマンドディスパッチャ
@@ -647,12 +848,16 @@ export async function executeOjCommand(args: string[]): Promise<boolean> {
     // 共通アクション階層
     case "t":
     case "test":
-      handleTest(rest);
+      await handleTest(rest);
       break;
 
     case "b":
     case "bundle":
-      handleBundle(rest);
+      await handleBundle(rest);
+      break;
+    case "s":
+    case "stress":
+      handleStress(rest);
       break;
 
     case "f":
@@ -665,15 +870,96 @@ export async function executeOjCommand(args: string[]): Promise<boolean> {
       handleStatus();
       break;
 
+    case "server":
+    case "serve": {
+      const action = (rest[0] || "").toLowerCase();
+
+      if (action === "stop") {
+        await stopActiveOrTargetServer(rest[1]);
+        break;
+      }
+
+      if (action === "start") {
+        if (activeInteractiveServer) {
+          console.log(`${c.yellow}[WARN] すでにサーバーはポート ${activeInteractiveServer.port} で稼働中です。${c.reset}`);
+          break;
+        }
+        const parsedPort = parseInt(rest[1] || "", 10);
+        const targetPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : DEFAULT_PORT;
+        try {
+          const s = await startLocalRunnerServer(targetPort, { silent: isInteractiveShell });
+          if (isInteractiveShell) {
+            activeInteractiveServer = s;
+            console.log(`${c.green}[OK]${c.reset} Local Runner サーバーを起動しました: ${c.bold}${c.yellow}http://localhost:${s.port}/${c.reset}`);
+          } else {
+            await runStandaloneServerLoop(s);
+          }
+        } catch (err: any) {
+          console.error(`${c.red}起動エラー: ${err?.message || err}${c.reset}`);
+        }
+        break;
+      }
+
+      if (action === "st" || action === "status") {
+        const parsedPort = parseInt(rest[1] || "", 10);
+        const targetPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : undefined;
+        if (activeInteractiveServer && (!targetPort || activeInteractiveServer.port === targetPort)) {
+          console.log(`Local Runner: ${c.green}稼働中${c.reset} (${c.cyan}http://localhost:${activeInteractiveServer.port}/${c.reset})`);
+        } else {
+          const status = await getLocalRunnerStatus(targetPort);
+          if (status.running) {
+            console.log(`Local Runner: ${c.green}稼働中${c.reset} (${c.cyan}http://localhost:${status.port}/${c.reset})`);
+          } else {
+            console.log(`Local Runner: ${c.gray}停止中${c.reset} ('server start' または 'oj server start' で起動可能)`);
+          }
+        }
+        break;
+      }
+
+      if (isInteractiveShell && rest.length === 0) {
+        if (activeInteractiveServer) {
+          console.log(`Local Runner: ${c.green}稼働中${c.reset} (${c.cyan}http://localhost:${activeInteractiveServer.port}/${c.reset}) - 'server stop' で停止`);
+        } else {
+          console.log(`Local Runner: ${c.gray}停止中${c.reset} - 'server start' で起動`);
+        }
+        break;
+      }
+
+      // 単独起動またはログ画面 (oj server [port])
+      const port = parseInt(rest[0] || "", 10);
+      const targetPort = Number.isFinite(port) && port > 0 ? port : undefined;
+
+      // すでにサーバーが起動中なら -> リアルタイムログ画面 (Log Monitor) を表示
+      const st = await getLocalRunnerStatus(targetPort);
+      if (st.running && st.port) {
+        await attachLogMonitor(st.port);
+        break;
+      }
+
+      // 未起動なら -> サーバーをログ表示モード (silent: false) で起動
+      let s: ServerInstance | null = null;
+      try {
+        s = await startLocalRunnerServer(targetPort ?? DEFAULT_PORT, { silent: false });
+      } catch (err: any) {
+        console.error(`${c.red}サーバー起動エラー: ${err?.message || err}${c.reset}`);
+        break;
+      }
+
+      await runStandaloneServerLoop(s);
+      break;
+    }
+
+    case "stop": {
+      await stopActiveOrTargetServer(rest[0]);
+      break;
+    }
+
     case "setup":
       runSetup(rest.includes("--clean") || rest.includes("--remove"));
       break;
 
     case "login":
-      spawnSync("bun", [path.join(__dirname, "login.ts"), ...rest], {
-        stdio: "inherit",
-        cwd: projectRoot,
-      });
+      runInteractiveChildSync(path.join(__dirname, "login.ts"), rest);
       break;
 
     case "h":
@@ -694,9 +980,11 @@ export async function executeOjCommand(args: string[]): Promise<boolean> {
       return false;
 
     default: {
-      // もし "oj a" のように問題名1文字だけが打たれた場合はテストとして扱う便利フォールバック
-      if (/^[a-h]$/i.test(sub) && rest.length === 0) {
-        handleTest([sub]);
+      // もし "oj a" / "oj ex" / "oj d1" のように問題名だけが打たれた場合はテストとして扱う便利フォールバック
+      const s = loadState();
+      const hasProbCpp = fs.existsSync(path.join(projectRoot, s.platform, s.folder, `${sub.toLowerCase()}.cpp`));
+      if (rest.length === 0 && (/^[a-h]$/i.test(sub) || (isProblemLabelArg(sub) && hasProbCpp))) {
+        await handleTest([sub]);
       } else {
         console.error(`${c.red}未知のサブコマンド: '${sub}'${c.reset} ('oj h' でコマンド一覧を表示)`);
       }
@@ -710,10 +998,19 @@ export async function executeOjCommand(args: string[]): Promise<boolean> {
  * 専用コマンドシェル (REPL) モード
  */
 async function startInteractiveShell(): Promise<void> {
+  isInteractiveShell = true;
+  try {
+    // 対話シェル内では作業プロンプトを汚さないよう完全サイレント (silent: true) で待機
+    // ログを見たい場合は別窓で 'oj server' を打つとログ監視画面が開く
+    activeInteractiveServer = await startLocalRunnerServer(DEFAULT_PORT, { silent: true });
+  } catch (err: any) {
+    console.error(`${c.red}[WARN] Local Runner サーバー自動起動エラー: ${err?.message || err}${c.reset}`);
+  }
+
   const commands = [
     "ac", "atcoder", "cf", "codeforces", "use", "new",
-    "t", "test", "b", "bundle", "f", "fetch",
-    "st", "status", "login", "help", "h", "clear", "exit", "q",
+    "t", "test", "b", "bundle", "s", "stress", "f", "fetch",
+    "st", "status", "server", "serve", "stop", "login", "help", "h", "clear", "exit", "q",
   ];
 
   const rl = readline.createInterface({
@@ -726,28 +1023,62 @@ async function startInteractiveShell(): Promise<void> {
   });
 
   const getPrompt = (): string => {
+
     const s = loadState();
+
     const label = s.folder === s.contest ? s.folder : `${s.contest} (${s.folder})`;
     return `${c.bold}${c.green}oj${c.reset} [${c.cyan}${s.platform}: ${label}${c.reset}] > `;
   };
 
   const s = loadState();
-  console.log(`${c.bold}${c.cyan}================================================================${c.reset}`);
-  console.log(` ⚡ ${c.bold}${c.green}OJ Interactive Command Shell${c.reset}`);
-  console.log(` 📂 Target: ${c.bold}${s.platform}/${s.folder}${c.reset} (Contest: ${c.yellow}${s.contest}${c.reset})`);
-  console.log(` 💡 Commands: ${c.cyan}ac <id>${c.reset}, ${c.cyan}cf <id>${c.reset}, ${c.cyan}t [prob]${c.reset}, ${c.cyan}b [prob]${c.reset}, ${c.cyan}st${c.reset}, ${c.cyan}h${c.reset}, ${c.cyan}exit${c.reset}`);
-  console.log(`${c.bold}${c.cyan}================================================================${c.reset}`);
+  console.log(`\x1b[90m${hr('-')}\x1b[0m`);
+  console.log(`  \x1b[1mOJ Interactive Command Shell\x1b[0m`);
+  console.log(`  Target   : \x1b[1m${s.platform}/${s.folder}\x1b[0m (Contest: \x1b[33m${s.contest}\x1b[0m)`);
+  if (activeInteractiveServer) {
+    console.log(`  Server   : \x1b[33mhttp://localhost:${activeInteractiveServer.port}/\x1b[0m \x1b[90m(Local Runner 待機中 / ログ表示:別ターミナルで 'oj server')\x1b[0m`);
+  } else {
+    console.log(`  Server   : \x1b[90m停止中 ('server start' で起動)\x1b[0m`);
+  }
+  console.log(`  Commands : ac <id>, cf <id>, t [prob], b [prob], st, h, exit`);
+  console.log(`\x1b[90m${hr('-')}\x1b[0m`);
 
   const promptLoop = () => {
     rl.setPrompt(getPrompt());
     rl.prompt();
   };
 
-  rl.on("line", async (line) => {
+  let shellExiting = false;
+  const shutdownShell = async () => {
+    if (shellExiting) return;
+    shellExiting = true;
+    const srv = activeInteractiveServer;
+    activeInteractiveServer = null;
+    if (srv) {
+      await Promise.race([
+        Promise.resolve(srv.stop("shell_exit")).catch(() => {}),
+        new Promise<void>((r) => setTimeout(r, 500)),
+      ]);
+    }
+    isInteractiveShell = false;
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try { process.stdin.setRawMode(false); } catch {}
+    }
+    try { rl.close(); } catch {}
+    console.log(`${c.gray}OJ シェルを終了しました。${c.reset}`);
+  };
+
+  rl.on("SIGINT", () => {
+    console.log();
+    void shutdownShell().finally(() => process.exit(0));
+  });
+
+  promptLoop();
+
+  for await (const line of rl) {
     const trimmed = line.trim();
     if (!trimmed) {
       promptLoop();
-      return;
+      continue;
     }
 
     // 先頭に誤って "oj " を付けて打った場合も許容
@@ -755,25 +1086,22 @@ async function startInteractiveShell(): Promise<void> {
     const parts = rawParts[0].toLowerCase() === "oj" ? rawParts.slice(1) : rawParts;
 
     rl.pause();
+    let keepGoing = true;
     try {
-      const keepGoing = await executeOjCommand(parts);
-      if (!keepGoing) {
-        rl.close();
-        return;
-      }
+      keepGoing = await executeOjCommand(parts);
     } catch (err: any) {
       console.error(`${c.red}エラー: ${err.message}${c.reset}`);
     }
+    if (!keepGoing) {
+      break;
+    }
+    if (isInteractiveShell) console.log();
     rl.resume();
     promptLoop();
-  });
+  }
 
-  rl.on("close", () => {
-    console.log(`${c.gray}OJ シェルを終了しました。${c.reset}`);
-    process.exit(0);
-  });
-
-  promptLoop();
+  await shutdownShell();
+  process.exit(0);
 }
 
 // エントリーポイント

@@ -6,6 +6,9 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setupWslHybridEnv } from "./wsl_bridge.ts";
+import { installWindowsNewlineFix, hr } from "./tty_fix.ts";
+
+installWindowsNewlineFix();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -135,9 +138,9 @@ export function runSetup(remove = false): void {
   const bunExecPath = process.execPath;
   const bunExecDir = path.dirname(bunExecPath);
 
-  console.log(`\n${c.bold}${c.cyan}================================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
   console.log(` ⚡ ${c.bold}${c.green}OJ Dynamic Environment Setup${c.reset}`);
-  console.log(`${c.bold}${c.cyan}================================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
   console.log(`  📂 Project Root : ${c.bold}${projectRoot}${c.reset}`);
 
   // 1. .bin ラッパーの生成（個人パスを一切含まない 100% 汎用・カレントディレクトリ探索型スクリプト）
@@ -275,7 +278,7 @@ ${MARKER_END}`;
   // 4. WSL2 / Linux 2層ハイブリッド環境 (永続 $HOME/.cache/oj-cp ⇄ 超高速 /dev/shm) の自動構築
   setupWslHybridEnv(remove);
 
-  console.log(`${c.bold}${c.cyan}================================================================${c.reset}`);
+  console.log(`${c.bold}${c.cyan}${hr("=")}${c.reset}`);
   if (remove) {
     console.log(` 🧹 自動認識設定をクリーンアップしました。\n`);
   } else {

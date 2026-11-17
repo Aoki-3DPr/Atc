@@ -171,34 +171,80 @@ export interface LibFileEntry {
   contentB64?: string;
 }
 
-interface SyncState {
+export interface SyncState {
   libFiles: Record<string, { mtimeMs: number; size: number; hash: string }>;
 }
 
+let inMemorySyncState: SyncState | null = null;
+let inMemorySyncStateFileMtime = -1;
+const inMemoryLibHashes = new Map<string, { mtimeMs: number; size: number; hash: string }>();
+
+interface CachedDeltaResult {
+  expiresAt: number;
+  includeContent: boolean;
+  result: {
+    changed: { relPath: string; contentB64: string }[];
+    deleted: string[];
+    combinedLibHash: string;
+    newState: SyncState;
+  };
+}
+let recentLibDeltaCache: CachedDeltaResult | null = null;
+
 function loadSyncState(): SyncState {
-  if (fs.existsSync(syncStatePath)) {
-    try {
-      return JSON.parse(fs.readFileSync(syncStatePath, "utf8")) as SyncState;
-    } catch {}
+  try {
+    if (fs.existsSync(syncStatePath)) {
+      const st = fs.statSync(syncStatePath);
+      if (inMemorySyncState && st.mtimeMs === inMemorySyncStateFileMtime) {
+        return inMemorySyncState;
+      }
+      const parsed = JSON.parse(fs.readFileSync(syncStatePath, "utf8")) as SyncState;
+      inMemorySyncState = parsed;
+      inMemorySyncStateFileMtime = st.mtimeMs;
+      return parsed;
+    }
+  } catch {}
+  if (inMemorySyncState && !fs.existsSync(syncStatePath)) {
+    inMemorySyncState = null;
+    inMemorySyncStateFileMtime = -1;
   }
   return { libFiles: {} };
 }
 
-function saveSyncState(state: SyncState): void {
+export function saveSyncState(state: SyncState): void {
   try {
     fs.writeFileSync(syncStatePath, JSON.stringify(state, null, 2), "utf8");
+    inMemorySyncState = state;
+    try {
+      inMemorySyncStateFileMtime = fs.statSync(syncStatePath).mtimeMs;
+    } catch {}
+    recentLibDeltaCache = null;
   } catch {}
 }
 
 /**
  * lib/ ディレクトリ内の全ファイルを走査し、前回同期時からの差分 (追加・変更・削除) と全体ハッシュを計算
  */
-export function computeLibDelta(forceAll = false): {
+export function computeLibDelta(
+  forceAll = false,
+  options?: { includeContent?: boolean }
+): {
   changed: { relPath: string; contentB64: string }[];
   deleted: string[];
   combinedLibHash: string;
   newState: SyncState;
 } {
+  const includeContent = options?.includeContent ?? true;
+  const now = Date.now();
+  if (
+    !forceAll &&
+    recentLibDeltaCache &&
+    now < recentLibDeltaCache.expiresAt &&
+    (recentLibDeltaCache.includeContent || !includeContent)
+  ) {
+    return recentLibDeltaCache.result;
+  }
+
   const prevState = forceAll ? { libFiles: {} } : loadSyncState();
   const newState: SyncState = { libFiles: {} };
   const changed: { relPath: string; contentB64: string }[] = [];
@@ -218,19 +264,28 @@ export function computeLibDelta(forceAll = false): {
         const relPath = path.relative(libDir, fullPath).replace(/\\/g, "/");
         const stat = fs.statSync(fullPath);
         const prev = prevState.libFiles[relPath];
+        const memPrev = inMemoryLibHashes.get(relPath);
 
         let fileHash = "";
         let buf: Buffer | null = null;
 
         if (!forceAll && prev && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size && prev.hash) {
           fileHash = prev.hash;
+          inMemoryLibHashes.set(relPath, { mtimeMs: stat.mtimeMs, size: stat.size, hash: fileHash });
+        } else if (!includeContent && !forceAll && memPrev && memPrev.mtimeMs === stat.mtimeMs && memPrev.size === stat.size) {
+          // ハッシュ取得のみ (Native 等) の場合は未変更ファイルの readFileSync / Base64 化をスキップ
+          fileHash = memPrev.hash;
+          if (!prev || prev.hash !== fileHash) {
+            changed.push({ relPath, contentB64: "" });
+          }
         } else {
           buf = fs.readFileSync(fullPath);
           fileHash = crypto.createHash("sha1").update(buf).digest("hex");
+          inMemoryLibHashes.set(relPath, { mtimeMs: stat.mtimeMs, size: stat.size, hash: fileHash });
           if (forceAll || !prev || prev.hash !== fileHash) {
             changed.push({
               relPath,
-              contentB64: buf.toString("base64"),
+              contentB64: includeContent ? buf.toString("base64") : "",
             });
           }
         }
@@ -253,12 +308,22 @@ export function computeLibDelta(forceAll = false): {
     }
   }
 
-  return {
+  const result = {
     changed,
     deleted,
     combinedLibHash: hashBuilder.digest("hex"),
     newState,
   };
+
+  if (!forceAll) {
+    recentLibDeltaCache = {
+      expiresAt: now + 400,
+      includeContent,
+      result,
+    };
+  }
+
+  return result;
 }
 
 /**
@@ -284,19 +349,94 @@ function runLinuxBash(script: string, stdinInput?: string): { status: number | n
   };
 }
 
+let cachedWslAvailable: boolean | null = null;
+let cachedWslCheckedAt = 0;
+
 /**
- * WSL (またはネイティブ Linux) の g++ 環境が利用可能かチェック
+ * WSL (またはネイティブ Linux) の g++ 環境が利用可能かチェック (プロセス内メモ化・失敗時15秒TTL)
  */
-export function isWslOrLinuxAvailable(): boolean {
+export function isWslOrLinuxAvailable(forceRefresh = false): boolean {
   if (process.env.OJ_NO_WSL === "1") return false;
   if (process.platform !== "win32" && process.platform !== "linux") return false;
+  if (!forceRefresh && cachedWslAvailable !== null) {
+    if (cachedWslAvailable || Date.now() - cachedWslCheckedAt < 15000) {
+      return cachedWslAvailable;
+    }
+  }
 
+  cachedWslCheckedAt = Date.now();
   try {
     const res = runLinuxBash("command -v g++ >/dev/null 2>&1 && echo OK");
-    return res.status === 0 && res.stdout.includes("OK");
+    cachedWslAvailable = res.status === 0 && res.stdout.includes("OK");
   } catch {
-    return false;
+    cachedWslAvailable = false;
   }
+  return cachedWslAvailable;
+}
+
+/**
+ * oj_runner.cpp の LF 正規化済み Base64 文字列を返す
+ */
+export function getWslRunnerSourceB64(): string {
+  return Buffer.from(OJ_RUNNER_CPP.replace(/\r\n/g, "\n"), "utf8").toString("base64");
+}
+
+/**
+ * WSL / Linux 永続キャッシュ ($HOME/.cache/oj-cp) の oj_runner / stdc++.h.gch / flags.txt
+ * をセルフヒールするための共通 Bash スクリプト断片を生成する
+ */
+export function buildWslSelfHealScript(options?: {
+  runnerAlreadyWritten?: boolean;
+  checkSourceDiff?: boolean;
+  checkCompilerSig?: boolean;
+  emitTags?: boolean;
+  nonFatal?: boolean;
+}): string {
+  const runnerAlreadyWritten = options?.runnerAlreadyWritten ?? false;
+  const checkSourceDiff = options?.checkSourceDiff ?? false;
+  const checkCompilerSig = options?.checkCompilerSig ?? false;
+  const emitTags = options?.emitTags ?? false;
+  const nonFatal = options?.nonFatal ?? false;
+  const runnerB64 = getWslRunnerSourceB64();
+  const orTrue = nonFatal ? " || true" : "";
+
+  const runnerCond = checkSourceDiff
+    ? `[ ! -x "$CACHE_DIR/bin/oj_runner" ] || ! cmp -s "$CACHE_DIR/bin/oj_runner.cpp" "$CACHE_DIR/bin/oj_runner.cpp.built" 2>/dev/null`
+    : `[ ! -x "$CACHE_DIR/bin/oj_runner" ]`;
+
+  const writeRunnerCmd = runnerAlreadyWritten
+    ? ""
+    : `  printf '%s' '${runnerB64}' | base64 -d > "$CACHE_DIR/bin/oj_runner.cpp"\n`;
+
+  const sigPrelude = checkCompilerSig
+    ? `STD_FLAG="-std=c++23"\nif ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then STD_FLAG="-std=c++2b"; fi\nif ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then STD_FLAG="-std=c++20"; fi\nCXX_FLAGS="$STD_FLAG -O2 -fno-exceptions -fno-rtti"\nCOMPILER_SIG="$(g++ --version 2>/dev/null | head -n 1) | $CXX_FLAGS"\n`
+    : "";
+
+  const sigComputeInIf = checkCompilerSig
+    ? ""
+    : `  STD_FLAG="-std=c++23"\n  if ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then STD_FLAG="-std=c++2b"; fi\n  if ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then STD_FLAG="-std=c++20"; fi\n  CXX_FLAGS="$STD_FLAG -O2 -fno-exceptions -fno-rtti"\n  COMPILER_SIG="$(g++ --version 2>/dev/null | head -n 1) | $CXX_FLAGS"\n`;
+
+  const pchCond = checkCompilerSig
+    ? `[ ! -f "$CACHE_DIR/pch/bits/stdc++.h.gch" ] || [ ! -f "$CACHE_DIR/pch/flags.txt" ] || [ "$(cat "$CACHE_DIR/pch/sig.txt" 2>/dev/null)" != "$COMPILER_SIG" ]`
+    : `[ ! -f "$CACHE_DIR/pch/bits/stdc++.h.gch" ] || [ ! -f "$CACHE_DIR/pch/flags.txt" ]`;
+
+  const builtTagCmd = emitTags ? `echo "BUILT_PCH"\n` : "";
+  const builtRunnerTag = emitTags ? ` && echo "BUILT_RUNNER"` : "";
+
+  return `mkdir -p "$CACHE_DIR/pch/bits" "$CACHE_DIR/bin" "$CACHE_DIR/lib" "$CACHE_DIR/work" "$CACHE_DIR/programs"
+if ${runnerCond}; then
+${writeRunnerCmd}  (g++ -O2 "$CACHE_DIR/bin/oj_runner.cpp" -o "$CACHE_DIR/bin/oj_runner" && cp "$CACHE_DIR/bin/oj_runner.cpp" "$CACHE_DIR/bin/oj_runner.cpp.built" 2>/dev/null${builtRunnerTag})${orTrue}
+fi
+${sigPrelude}if ${pchCond}; then
+${sigComputeInIf}  STDC_PATH="$(echo '#include <bits/stdc++.h>' | g++ -x c++ -E -M - 2>/dev/null | tr ' \\\\' '\\n' | grep 'bits/stdc++.h$' | head -n 1)"
+  if [ -n "$STDC_PATH" ] && [ -f "$STDC_PATH" ]; then
+    cp "$STDC_PATH" "$CACHE_DIR/pch/bits/stdc++.h"
+    if g++ $CXX_FLAGS -x c++-header "$CACHE_DIR/pch/bits/stdc++.h" -o "$CACHE_DIR/pch/bits/stdc++.h.gch" 2>/dev/null; then
+      printf '%s' "$COMPILER_SIG" > "$CACHE_DIR/pch/sig.txt"
+      ${builtTagCmd}    fi
+  fi
+  printf '%s' "$CXX_FLAGS" > "$CACHE_DIR/pch/flags.txt"
+fi`;
 }
 
 /**
@@ -360,7 +500,7 @@ oj() {
 `.replace(/\r\n/g, "\n");
   const rcBlockB64 = Buffer.from(posixRcBlock, "utf8").toString("base64");
 
-  const runnerB64 = Buffer.from(OJ_RUNNER_CPP.replace(/\r\n/g, "\n"), "utf8").toString("base64");
+  const runnerB64 = getWslRunnerSourceB64();
   const { changed, newState } = computeLibDelta(true);
 
   const syncLines: string[] = [];
@@ -370,14 +510,22 @@ oj() {
   }
   syncLines.push("END");
 
+  const selfHealBlock = buildWslSelfHealScript({
+    runnerAlreadyWritten: true,
+    checkSourceDiff: true,
+    checkCompilerSig: true,
+    emitTags: true,
+    nonFatal: false,
+  });
+
   const setupBashScript = `
 set -e
 CACHE_DIR="$HOME/.cache/oj-cp"
 
-# 過去の /dev/shm 常駐ファイルがあれば解放してメモリを空ける
-rm -rf /dev/shm/oj-cp* /dev/shm/pch /dev/shm/bench_pch /dev/shm/err.log /dev/shm/CompetitiveProgramming-build /dev/shm/APG4b-build 2>/dev/null || true
+# 過去のレガシー /dev/shm 常駐ファイルがあれば解放してメモリを空ける (稼働中サーバー等のディレクトリには触れない)
+rm -rf /dev/shm/oj-cp /dev/shm/pch /dev/shm/bench_pch /dev/shm/err.log /dev/shm/CompetitiveProgramming-build /dev/shm/APG4b-build 2>/dev/null || true
 
-mkdir -p "$CACHE_DIR/pch/bits" "$CACHE_DIR/bin" "$CACHE_DIR/lib" "$CACHE_DIR/work"
+mkdir -p "$CACHE_DIR/pch/bits" "$CACHE_DIR/bin" "$CACHE_DIR/lib" "$CACHE_DIR/work" "$CACHE_DIR/programs"
 
 while IFS=' ' read -r cmd arg1 arg2; do
   case "$cmd" in
@@ -395,32 +543,8 @@ while IFS=' ' read -r cmd arg1 arg2; do
   esac
 done
 
-# 1. ネイティブ C++ テストランナーのビルド (未ビルドまたは更新時)
-if [ ! -x "$CACHE_DIR/bin/oj_runner" ] || ! cmp -s "$CACHE_DIR/bin/oj_runner.cpp" "$CACHE_DIR/bin/oj_runner.cpp.built" 2>/dev/null; then
-  g++ -O2 "$CACHE_DIR/bin/oj_runner.cpp" -o "$CACHE_DIR/bin/oj_runner"
-  cp "$CACHE_DIR/bin/oj_runner.cpp" "$CACHE_DIR/bin/oj_runner.cpp.built"
-  echo "BUILT_RUNNER"
-fi
-
-# 2. C++ 標準の自動判定 (-std=c++23 または -std=c++2b)
-STD_FLAG="-std=c++23"
-if ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then
-  STD_FLAG="-std=c++2b"
-fi
-CXX_FLAGS="$STD_FLAG -O2 -fno-exceptions -fno-rtti"
-COMPILER_SIG="$(g++ --version | head -n 1) | $CXX_FLAGS"
-
-# 3. <bits/stdc++.h> の動的探索と永続 PCH ビルド (ディスク上の $HOME/.cache/oj-cp にのみ保存)
-if [ ! -f "$CACHE_DIR/pch/bits/stdc++.h.gch" ] || [ "$(cat "$CACHE_DIR/pch/sig.txt" 2>/dev/null)" != "$COMPILER_SIG" ]; then
-  STDC_PATH="$(echo '#include <bits/stdc++.h>' | g++ -x c++ -E -M - 2>/dev/null | tr ' \\\\' '\\n' | grep 'bits/stdc++.h$' | head -n 1)"
-  if [ -n "$STDC_PATH" ] && [ -f "$STDC_PATH" ]; then
-    cp "$STDC_PATH" "$CACHE_DIR/pch/bits/stdc++.h"
-    g++ $CXX_FLAGS -x c++-header "$CACHE_DIR/pch/bits/stdc++.h" -o "$CACHE_DIR/pch/bits/stdc++.h.gch"
-    printf '%s' "$COMPILER_SIG" > "$CACHE_DIR/pch/sig.txt"
-    printf '%s' "$CXX_FLAGS" > "$CACHE_DIR/pch/flags.txt"
-    echo "BUILT_PCH"
-  fi
-fi
+# 1〜3. ネイティブ C++ テストランナーおよび永続 PCH のビルド・更新
+${selfHealBlock}
 
 # 4. WSL 側の ~/.bashrc 等にも動的 oj ディスパッチャを登録 (個人パス一切なし)
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -473,6 +597,7 @@ export interface WslTestRunSummary {
   syncedLibCount: number;
   needsBuild: boolean;
   buildDurationMs: number;
+  preRunTotalMs?: number;
   buildError?: string;
   results: WslCaseOutput[];
 }
@@ -488,6 +613,8 @@ export function runTestViaWslHybrid(
   cases: WslCaseInput[]
 ): WslTestRunSummary | null {
   if (!isWslOrLinuxAvailable()) return null;
+
+  const wslHybridStart = performance.now();
 
   const srcBuf = fs.readFileSync(srcFile);
   const srcB64 = srcBuf.toString("base64");
@@ -518,37 +645,27 @@ export function runTestViaWslHybrid(
   }
   stdinLines.push("END");
 
-  const runnerFallbackB64 = Buffer.from(OJ_RUNNER_CPP.replace(/\r\n/g, "\n"), "utf8").toString("base64");
+  const selfHealBlock = buildWslSelfHealScript({
+    runnerAlreadyWritten: false,
+    checkSourceDiff: false,
+    checkCompilerSig: false,
+    emitTags: false,
+    nonFatal: false,
+  });
 
   const execBashScript = `
 set -e
 CACHE_DIR="$HOME/.cache/oj-cp"
 SHM_BASE="/dev/shm"
 [ -d "$SHM_BASE" ] && [ -w "$SHM_BASE" ] || SHM_BASE="/tmp"
-RUN_DIR="$SHM_BASE/oj-run-$$"
+RUN_DIR="$SHM_BASE/oj-cp-run-$$"
 
-# テスト終了時に必ず /dev/shm の一時領域を完全削除し、PCのメモリ(RAM)を即座に解放する
-trap 'rm -rf "$RUN_DIR" /dev/shm/oj-cp* /dev/shm/pch /dev/shm/bench_pch /dev/shm/err.log 2>/dev/null || true' EXIT
+# テスト終了時に必ず自身の一時実行領域のみ完全削除し、PCのメモリ(RAM)を即座に解放する (サーバー領域等には触れない)
+trap 'rm -rf "$RUN_DIR" 2>/dev/null || true' EXIT
 mkdir -p "$RUN_DIR" "$CACHE_DIR/work"
 
 # 1. 永続マスター ($HOME/.cache/oj-cp) が未初期化の場合のセルフヒール
-if [ ! -x "$CACHE_DIR/bin/oj_runner" ]; then
-  mkdir -p "$CACHE_DIR/pch/bits" "$CACHE_DIR/bin" "$CACHE_DIR/lib"
-  printf '%s' '${runnerFallbackB64}' | base64 -d > "$CACHE_DIR/bin/oj_runner.cpp"
-  g++ -O2 "$CACHE_DIR/bin/oj_runner.cpp" -o "$CACHE_DIR/bin/oj_runner"
-fi
-
-if [ ! -f "$CACHE_DIR/pch/bits/stdc++.h.gch" ]; then
-  STD_FLAG="-std=c++23"
-  if ! g++ $STD_FLAG -x c++ -E /dev/null >/dev/null 2>&1; then STD_FLAG="-std=c++2b"; fi
-  CXX_FLAGS="$STD_FLAG -O2 -fno-exceptions -fno-rtti"
-  STDC_PATH="$(echo '#include <bits/stdc++.h>' | g++ -x c++ -E -M - 2>/dev/null | tr ' \\\\' '\\n' | grep 'bits/stdc++.h$' | head -n 1)"
-  if [ -n "$STDC_PATH" ] && [ -f "$STDC_PATH" ]; then
-    cp "$STDC_PATH" "$CACHE_DIR/pch/bits/stdc++.h"
-    g++ $CXX_FLAGS -x c++-header "$CACHE_DIR/pch/bits/stdc++.h" -o "$CACHE_DIR/pch/bits/stdc++.h.gch"
-    printf '%s' "$CXX_FLAGS" > "$CACHE_DIR/pch/flags.txt"
-  fi
-fi
+${selfHealBlock}
 
 TARGET=""
 HASH=""
@@ -722,12 +839,17 @@ fi
     }
   }
 
+  const wslWallMs = performance.now() - wslHybridStart;
+  const sumCaseElapsedMs = results.reduce((sum, r) => sum + (Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0), 0);
+  const preRunTotalMs = Math.max(buildDurationMs, Math.round(wslWallMs - sumCaseElapsedMs));
+
   return {
     usedWsl: true,
     mountedFromHomeCache,
     syncedLibCount: changed.length + deleted.length,
     needsBuild,
     buildDurationMs,
+    preRunTotalMs,
     results,
   };
 }

@@ -8,27 +8,65 @@ ll di[8] = {1, 0, -1, 0, 1, 1, -1, -1};
 ll dj[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 
 ll solve() {
-	ll t; cin >> t;
-	while (t--) {
-		ll n; cin >> n;
-		vector<ll> v;
-		ll sum = 0;
-		for (ll i = 0; i < n; i++) {
-			ll x; cin >> x;
-			v.push_back(x);
-			sum += x;
-		}
-		if (sum == n) {
-			cout << -1 << endl;
-			continue;
-		}
-		if (sum - v[0] - v[n - 1] == n - 2) {
-			cout << v[0] + v[n - 1] - 1 << endl;
-			continue;
-		}
-		cout << sum - 1 << endl;
-
+	ll n; cin >> n;
+	vector<ll> v(n);
+	for (ll i= 0; i < n; i++) {
+		cin >> v[i];
 	}
+	ll sum = 0;
+	ll a = -1;
+	ll aa = 0;
+	for (ll i = 0; i < n; i++) {
+		sum += v[i];
+		if (sum == 0) {
+			if (a < 0) {
+				aa++;
+				sum++;
+			} else {
+				aa++;
+				sum--;
+			}
+		} else if (sum > 0 && a > 0) {
+			aa += abs(sum) + 1;
+			sum = -1;
+		} else if (sum < 0 && a < 0) {
+			aa += abs(sum) + 1;
+			sum = 1;
+		}
+		if (sum > 0) {
+			a = 1;
+		} else {
+			a = -1;
+		}
+	}
+
+	sum = 0;
+	a = 1;
+	ll aaa = 0;
+	for (ll i = 0; i < n; i++) {
+		sum += v[i];
+		if (sum == 0) {
+			if (a < 0) {
+				aaa++;
+				sum++;
+			} else {
+				aaa++;
+				sum--;
+			}
+		} else if (sum > 0 && a > 0) {
+			aaa += abs(sum) + 1;
+			sum = -1;
+		} else if (sum < 0 && a < 0) {
+			aaa += abs(sum) + 1;
+			sum = 1;
+		}
+		if (sum > 0) {
+			a = 1;
+		} else {
+			a = -1;
+		}
+	}
+	cout << min(aa, aaa) << endl;
 	return 0;
 }
 

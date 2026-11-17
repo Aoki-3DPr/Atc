@@ -5,7 +5,7 @@
 #define ll long long
 using namespace std;
 
-class Segment {
+class SegmentTree {
 private:
 	ll size;
 	ll identity;
@@ -13,7 +13,7 @@ private:
 
 	function<ll(ll a, ll b)> f;
 public:
-	Segment(ll n, function<ll(ll a, ll b)> func, ll identity) :
+	SegmentTree(ll n, function<ll(ll a, ll b)> func, ll identity) :
 	f(std::move(func)), identity(identity), size(bit_ceil(static_cast<unsigned int>(n))) {
 		tree.resize(size * 2, identity);
 	}
@@ -65,7 +65,7 @@ public:
 #ifdef BUILDING_LIB_STANDALONE
 int main() {
 	ll n = 100;
-	Segment s(n, [](ll a, ll b) { return max(a, b); }, LONG_LONG_MIN);
+	SegmentTree s(n, [](ll a, ll b) { return max(a, b); }, LONG_LONG_MIN);
 	for (ll i = 0; i < n; i++) {
 		s.set(i, i);
 	}

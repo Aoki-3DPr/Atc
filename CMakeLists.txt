@@ -106,4 +106,4 @@ foreach(SRC ${SRC_FILES})
     endif()
 endforeach()
 
-# Auto-reload trigger: AtCoder_abc482 (2026-10-31T12:00:46.840Z)
+# Auto-reload trigger: AtCoder_abc484 (2026-11-14T12:00:06.791Z)

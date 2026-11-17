@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { installWindowsNewlineFix, hr } from "./tty_fix.ts";
+
+installWindowsNewlineFix();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,9 +33,9 @@ function prompt(rl: readline.Interface, query: string): Promise<string> {
  * AtCoder ログインセッション設定
  */
 async function setupAtCoder(rl: readline.Interface) {
-  console.log("\n==================================================");
+  console.log(`\n${hr("=")}`);
   console.log("  AtCoder 本番コンテスト用セッション設定");
-  console.log("==================================================");
+  console.log(hr("="));
   console.log("※ 過去問の練習時はログイン不要です。本番コンテスト時のみ設定してください。\n");
   console.log("【Cookie取得手順】");
   console.log("1. ブラウザ（Chrome等）で AtCoder (https://atcoder.jp) にログインする");
@@ -75,9 +78,9 @@ async function setupAtCoder(rl: readline.Interface) {
  * Codeforces Cloudflare 通過用 Cookie 設定
  */
 async function setupCodeforces(rl: readline.Interface) {
-  console.log("\n==================================================");
+  console.log(`\n${hr("=")}`);
   console.log("  Codeforces Cloudflare / セッション設定");
-  console.log("==================================================");
+  console.log(hr("="));
   console.log("※ 過去問は設定なしでも取得できますが、本番開始直後の Cloudflare 対策に有効です。\n");
   console.log("【Cookie取得手順】");
   console.log("1. ブラウザ（Chrome等）で Codeforces (https://codeforces.com) を開く");
@@ -138,9 +141,9 @@ async function main() {
     } else if (target === "codeforces" || target === "cf") {
       await setupCodeforces(rl);
     } else {
-      console.log("==================================================");
+      console.log(hr("="));
       console.log("  ログイン / セッション Cookie 管理ツール");
-      console.log("==================================================");
+      console.log(hr("="));
       console.log("1) AtCoder (本番コンテスト用 REVEL_SESSION)");
       console.log("2) Codeforces (Cloudflare 通過用 cf_clearance / Cookie)");
       console.log("q) 終了\n");
