@@ -8,39 +8,18 @@ ll di[8] = {1, 0, -1, 0, 1, 1, -1, -1};
 ll dj[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 
 ll solve() {
-	ll t;
-	cin >> t;
-	while (t--) {
-		vector<ll> a;
-		ll sum = 0;
-		for (ll i = 0; i < 3; i++) {
-			ll x; cin >> x;
-			sum += x;
-			a.push_back(x);
-		}
-		ll index = 0;
-		for (int i = 0; i < 3; i++) {
-			if (a[i] > a[index]) {
-				index = i;
-			}
-		}
-		if (index == 0) {
-			for (ll i = 0; i < sum; i++) {
-				cout << "P";
-			}
-			cout << endl;
-		} else if (index == 1) {
-			for (ll i = 0; i < sum; i++) {
-				cout << "R";
-			}
-			cout << endl;
-		} else if (index == 2) {
-			for (ll i = 0; i < sum; i++) {
-				cout << "S";
-			}
-			cout << endl;
+	string s; cin >> s;
+	vector<ll> v(26);
+	for (ll i = 0; i < s.length(); i++) {
+		v[s[i] - 'a']++;
+	}
+	for (ll i = 0; i < 26; i++) {
+		if (v[i] == 0) {
+			cout << char('a' + i);
+			return 0;
 		}
 	}
+	cout << "None";
 	return 0;
 }
 

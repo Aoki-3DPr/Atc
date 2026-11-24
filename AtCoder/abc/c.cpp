@@ -10,63 +10,27 @@ ll dj[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 ll solve() {
 	ll n; cin >> n;
 	vector<ll> v(n);
-	for (ll i= 0; i < n; i++) {
+	map<ll, ll> mp;
+	for (ll i = 0; i < n; i++) {
 		cin >> v[i];
+		mp[v[i]]++;
 	}
-	ll sum = 0;
-	ll a = -1;
-	ll aa = 0;
-	for (ll i = 0; i < n; i++) {
-		sum += v[i];
-		if (sum == 0) {
-			if (a < 0) {
-				aa++;
-				sum++;
-			} else {
-				aa++;
-				sum--;
-			}
-		} else if (sum > 0 && a > 0) {
-			aa += abs(sum) + 1;
-			sum = -1;
-		} else if (sum < 0 && a < 0) {
-			aa += abs(sum) + 1;
-			sum = 1;
-		}
-		if (sum > 0) {
-			a = 1;
-		} else {
-			a = -1;
-		}
+	priority_queue<pair<ll, ll>> p;
+	for (auto i : mp) {
+		if (i.second < 2) continue;
+		p.emplace(i);
 	}
-
-	sum = 0;
-	a = 1;
-	ll aaa = 0;
-	for (ll i = 0; i < n; i++) {
-		sum += v[i];
-		if (sum == 0) {
-			if (a < 0) {
-				aaa++;
-				sum++;
-			} else {
-				aaa++;
-				sum--;
-			}
-		} else if (sum > 0 && a > 0) {
-			aaa += abs(sum) + 1;
-			sum = -1;
-		} else if (sum < 0 && a < 0) {
-			aaa += abs(sum) + 1;
-			sum = 1;
-		}
-		if (sum > 0) {
-			a = 1;
-		} else {
-			a = -1;
-		}
+	if (p.size() < 2) {
+		cout << 0 << endl;
+		return 0;
 	}
-	cout << min(aa, aaa) << endl;
+	auto fi = p.top(); p.pop();
+	auto se = p.top();
+	if (fi.second >= 4) {
+		cout << fi.first * fi.first << endl;
+	} else {
+		cout << fi.first * se.first << endl;
+	}
 	return 0;
 }
 

@@ -14,7 +14,7 @@ template <
 	F (*composition)(F, F),
 	F (*id)()
 >
-class LazySegment {
+class LazySegmentTree {
 private:
 	ll size;
 	vector<S> tree;
@@ -52,7 +52,7 @@ private:
 	}
 
 public:
-	LazySegment(ll n) :
+	LazySegmentTree(ll n) :
 	size(bit_ceil(static_cast<unsigned int>(n))) {
 		tree.resize(size * 2, e());
 		subtree.resize(size * 2, id());
@@ -95,7 +95,7 @@ int main() {
 	ios::sync_with_stdio(false);
 	cin.tie(nullptr);
 	ll n = 1000000;
-	LazySegment<ll, op, > s(n);
+	LazySegmentTree<ll, op, > s(n);
 	for (ll i = 0; i < n; i++) {
 		s.set(i, i);
 	}
